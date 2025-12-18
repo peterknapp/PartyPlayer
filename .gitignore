@@ -12,3 +12,6 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# Xcode workspace settings (ignore)
+**/WorkspaceSettings.xcsettings
