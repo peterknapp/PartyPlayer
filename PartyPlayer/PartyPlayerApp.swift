@@ -1,10 +1,3 @@
-//
-//  PartyPlayerApp.swift
-//  PartyPlayer
-//
-//  Created by Peter Knapp on 17.12.25.
-//
-
 import SwiftUI
 
 @main
