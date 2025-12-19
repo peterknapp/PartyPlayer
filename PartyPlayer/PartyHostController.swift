@@ -14,6 +14,7 @@ final class PartyHostController: ObservableObject {
     @Published var processDownOutcomes: Bool = true
     @Published var processUpOutcomes: Bool = true
     @Published var processSendToEndOutcomes: Bool = true
+    @Published private(set) var removedItems: [QueueItem] = []
 
     private let mpc: MPCService
     // Concurrent action slots per member (e.g., 3). Each spent when a vote is accepted and restored when the per-item cooldown elapses.
@@ -593,7 +594,7 @@ final class PartyHostController: ObservableObject {
             if votingEngineEnabled && processDownOutcomes {
                 if votingMode == .automatic {
                     clearAllVotesAndDecisions(itemID: itemID)
-                    removeFromQueue(itemID: itemID)
+                    removeFromQueueDueToDown(itemID: itemID)
                     DebugLog.shared.add("HOST", "vote outcome DOWN (auto removed, cleared counts+decisions) itemID=\(itemID) threshold=\(threshold)")
                 } else {
                     enqueuePendingOutcome(itemID: itemID, kind: .removeFromQueue, threshold: threshold)
@@ -654,7 +655,7 @@ final class PartyHostController: ObservableObject {
             moveBehindNowPlaying(itemID: outcome.itemID)
             clearVotes(itemID: outcome.itemID)
         case .removeFromQueue:
-            removeFromQueue(itemID: outcome.itemID)
+            removeFromQueueDueToDown(itemID: outcome.itemID)
         case .sendToEnd:
             sendToEnd(itemID: outcome.itemID)
         }
@@ -670,6 +671,16 @@ final class PartyHostController: ObservableObject {
         let outcome = PendingVoteOutcome(id: UUID(), itemID: itemID, kind: .sendToEnd, threshold: threshold, createdAt: Date())
         pendingVoteOutcomes.insert(outcome, at: 0)
         return outcome.id
+    }
+    
+    func restoreRemovedToEnd(itemID: UUID) {
+        guard let idx = removedItems.firstIndex(where: { $0.id == itemID }) else { return }
+        let item = removedItems.remove(at: idx)
+        // Avoid duplicates if item somehow already exists in queue
+        if !state.queue.contains(where: { $0.id == itemID }) {
+            state.queue.append(item)
+        }
+        broadcastSnapshot()
     }
 
     private func applyPlayedOutcomeIfNeeded(for itemID: UUID) {
@@ -710,6 +721,17 @@ final class PartyHostController: ObservableObject {
     private func removeFromQueue(itemID: UUID) {
         memberDecisions[itemID] = nil
         state.queue.removeAll { $0.id == itemID }
+    }
+    
+    private func removeFromQueueDueToDown(itemID: UUID) {
+        memberDecisions[itemID] = nil
+        guard let idx = state.queue.firstIndex(where: { $0.id == itemID }) else { return }
+        let item = state.queue[idx]
+        // Append to removed list if not already present
+        if !removedItems.contains(where: { $0.id == itemID }) {
+            removedItems.insert(item, at: 0)
+        }
+        state.queue.remove(at: idx)
     }
 
     private func sendToEnd(itemID: UUID) {

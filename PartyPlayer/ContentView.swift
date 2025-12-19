@@ -136,6 +136,7 @@ struct HostView: View {
             modeAndSettings
             pendingApprovalsPanel
             skipRequestsPanel
+            removedItemsPanel
             playlist
         }
         .padding()
@@ -264,6 +265,43 @@ struct HostView: View {
                                 host.approveSkipRequest(itemID: req.itemID)
                             }
                             .buttonStyle(.borderedProminent)
+                        }
+                        .padding(10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var removedItemsPanel: some View {
+        Group {
+            if host.removedItems.isEmpty {
+                EmptyView()
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Entfernte Titel")
+                        .font(.headline)
+
+                    ForEach(host.removedItems) { item in
+                        HStack(spacing: 12) {
+                            ArtworkView(urlString: item.artworkURL, size: 44)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                    .font(.subheadline)
+                                    .lineLimit(1)
+                                Text(item.artist)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Button("Ans Ende") {
+                                host.restoreRemovedToEnd(itemID: item.id)
+                            }
+                            .buttonStyle(.bordered)
                         }
                         .padding(10)
                         .background(.ultraThinMaterial)
