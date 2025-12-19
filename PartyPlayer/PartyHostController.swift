@@ -589,7 +589,7 @@ final class PartyHostController: ObservableObject {
 
         // admitted Gäste zählen (Host nicht)
         let guestCount = state.members.filter { $0.isAdmitted }.count
-        let threshold = max(1, (guestCount + 1) / 2) // >= 50%: for 1 guest -> 1
+        let threshold = max(1, (guestCount / 2) + 1) // > 50%: for 2 guests -> 2
 
         let up = item.upVotes.count
         let down = item.downVotes.count
@@ -675,7 +675,7 @@ final class PartyHostController: ObservableObject {
     }
     
     func requestSendToEndApproval(itemID: UUID) -> UUID {
-        let threshold = max(1, (state.members.filter { $0.isAdmitted }.count + 1) / 2)
+        let threshold = max(1, (state.members.filter { $0.isAdmitted }.count / 2) + 1)
         let outcome = PendingVoteOutcome(id: UUID(), itemID: itemID, kind: .sendToEnd, threshold: threshold, createdAt: Date())
         pendingVoteOutcomes.insert(outcome, at: 0)
         return outcome.id
@@ -696,7 +696,7 @@ final class PartyHostController: ObservableObject {
         if !isPlayed(itemID: itemID) { return }
 
         let guestCount = state.members.filter { $0.isAdmitted }.count
-        let threshold = max(1, (guestCount + 1) / 2)
+        let threshold = max(1, (guestCount / 2) + 1)
 
         if state.queue[idx].upVotes.count >= threshold {
             if votingEngineEnabled && processSendToEndOutcomes {
