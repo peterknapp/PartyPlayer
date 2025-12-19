@@ -34,6 +34,10 @@ enum PartyMessage: Codable {
 
     struct StateSnapshot: Codable {
         var state: PartyState
+        // Optional map: itemID -> remaining seconds for the requesting member
+        var cooldowns: [UUID: Double]? = nil
+        // Optional: remaining concurrent action slots for the requesting member
+        var remainingActionSlots: Int? = nil
     }
 
     enum VoteDirection: String, Codable { case up, down }
@@ -75,3 +79,4 @@ final class PartyCodec {
         try JSONDecoder().decode(PartyMessage.self, from: data)
     }
 }
+

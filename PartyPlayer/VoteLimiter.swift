@@ -38,4 +38,26 @@ final class VoteLimiter {
             return w
         }
     }
+
+    // MARK: - Debug helpers
+
+    func remainingWindowSeconds(memberID: MemberID, now: Date = Date()) -> TimeInterval {
+        let w = currentWindow(memberID: memberID, now: now)
+        let elapsed = now.timeIntervalSince(w.startedAt)
+        let remaining = max(0, windowSeconds - elapsed)
+        return remaining
+    }
+
+    func usedCount(memberID: MemberID, now: Date = Date()) -> Int {
+        let w = currentWindow(memberID: memberID, now: now)
+        return w.used
+    }
+
+    func windowResetAt(memberID: MemberID, now: Date = Date()) -> Date {
+        let w = currentWindow(memberID: memberID, now: now)
+        return w.startedAt.addingTimeInterval(windowSeconds)
+    }
+
+    func windowLengthSeconds() -> TimeInterval { windowSeconds }
+    func maxActionsPerWindow() -> Int { maxActions }
 }

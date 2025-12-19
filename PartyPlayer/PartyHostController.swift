@@ -10,11 +10,18 @@ final class PartyHostController: ObservableObject {
     @Published var joinCode: String
     @Published private(set) var nowPlaying: PartyMessage.NowPlayingPayload? = nil
     @Published private(set) var pendingSkipRequests: [PendingSkipRequest] = []
+    @Published var votingEngineEnabled: Bool = true
+    @Published var processDownOutcomes: Bool = true
+    @Published var processUpOutcomes: Bool = true
+    @Published var processSendToEndOutcomes: Bool = true
 
     private let mpc: MPCService
-    private let limiter = VoteLimiter()
+    // Concurrent action slots per member (e.g., 3). Each spent when a vote is accepted and restored when the per-item cooldown elapses.
+    private let maxConcurrentActions = 3
+    private var activeActions: [MemberID: Int] = [:]
+
     private var perItemLimiter = PerItemVoteLimiter()
-    @Published var perItemCooldownMinutes: Int = 20 { didSet { perItemLimiter.setCooldown(minutes: perItemCooldownMinutes) } }
+    @Published var perItemCooldownMinutes: Int = 1 { didSet { perItemLimiter.setCooldown(minutes: perItemCooldownMinutes) } }
     private let locationService: LocationService
     private let playback = HostPlaybackController()
 
@@ -40,6 +47,7 @@ final class PartyHostController: ObservableObject {
 
     // Pro Item: pro Member genau 1 Entscheidung (bis Item entfernt wird)
     private var memberDecisions: [UUID: [MemberID: PartyMessage.VoteDirection]] = [:]
+    private var lastMemberItemVoteAt: [MemberID: [UUID: Date]] = [:]
 
     // Helper to check played tracks (index < nowPlaying index)
     private func isPlayed(itemID: UUID) -> Bool {
@@ -47,6 +55,24 @@ final class PartyHostController: ObservableObject {
               let nowIdx = state.queue.firstIndex(where: { $0.id == nowID }),
               let idx = state.queue.firstIndex(where: { $0.id == itemID }) else { return false }
         return idx < nowIdx
+    }
+
+    // Helpers for concurrent action slots
+    private func remainingSlots(for member: MemberID) -> Int {
+        let used = activeActions[member] ?? 0
+        return max(0, maxConcurrentActions - used)
+    }
+
+    private func trySpendSlot(for member: MemberID) -> Bool {
+        let used = activeActions[member] ?? 0
+        guard used < maxConcurrentActions else { return false }
+        activeActions[member] = used + 1
+        return true
+    }
+
+    private func restoreSlot(for member: MemberID) {
+        let used = activeActions[member] ?? 0
+        activeActions[member] = max(0, used - 1)
     }
 
     init(hostName: String, locationService: LocationService) {
@@ -62,6 +88,8 @@ final class PartyHostController: ObservableObject {
         self.mpc.onData = { [weak self] data, peer in
             Task { await self?.handleIncoming(data: data, from: peer) }
         }
+        // Ensure initial cooldown is applied
+        self.perItemLimiter.setCooldown(minutes: self.perItemCooldownMinutes)
     }
 
     // MARK: - Skip approval UI
@@ -321,52 +349,194 @@ final class PartyHostController: ObservableObject {
 
     // MARK: - Voting
 
-    private func handleVote(_ vote: PartyMessage.VoteMessage) {
-        guard limiter.spendAction(memberID: vote.memberID) else { return }
+    /// Public helper: returns remaining cooldown in seconds for given memberID and itemID, or nil if no cooldown
+    func remainingCooldown(memberID: MemberID, itemID: UUID) -> TimeInterval? {
+        return perItemLimiter.remainingCooldown(memberID: memberID, itemID: itemID)
+    }
 
-        // Enforce per-item per-20-min cooldown
-        guard perItemLimiter.spend(memberID: vote.memberID, itemID: vote.itemID) else {
-            DebugLog.shared.add("HOST", "vote ignored (cooldown) member=\(vote.memberID) item=\(vote.itemID)")
+    private func handleVote(_ vote: PartyMessage.VoteMessage) {
+        let now = Date()
+        guard let idx = state.queue.firstIndex(where: { $0.id == vote.itemID }) else { return }
+
+        if !votingEngineEnabled {
+            // Simple counting only: one decision per member per item, replaceable within cooldown/limiter
+            guard trySpendSlot(for: vote.memberID) else {
+                DebugLog.shared.add("HOST", "vote ignored (no action slots) member=\(vote.memberID)")
+                return
+            }
+            broadcastSnapshot()
+
+            guard perItemLimiter.spend(memberID: vote.memberID, itemID: vote.itemID) else {
+                var remaining: String = "?"
+                if var lim = Optional(self.perItemLimiter) { // copy to call mutating helper safely
+                    if let r = lim.remainingCooldown(memberID: vote.memberID, itemID: vote.itemID) {
+                        remaining = String(Int(r.rounded()))
+                    }
+                }
+                let df = DateFormatter()
+                df.dateFormat = "HH:mm:ss.SSS"
+                let nowStr = df.string(from: Date())
+                DebugLog.shared.add("HOST", "\(nowStr) vote ignored (cooldown) member=\(vote.memberID) item=\(vote.itemID) remaining=\(remaining)s")
+                restoreSlot(for: vote.memberID)
+                return
+            }
+            var item = state.queue[idx]
+            // Remove previous decision from sets, if any
+            if let prev = memberDecisions[vote.itemID]?[vote.memberID] {
+                switch prev { case .up: item.upVotes.remove(vote.memberID); case .down: item.downVotes.remove(vote.memberID) }
+            }
+            // Apply new decision
+            switch vote.direction { case .up: item.upVotes.insert(vote.memberID); case .down: item.downVotes.insert(vote.memberID) }
+            state.queue[idx] = item
+            memberDecisions[vote.itemID, default: [:]][vote.memberID] = vote.direction
+
+            DebugLog.shared.add("HOST", "vote recorded (engine OFF) dir=\(vote.direction) itemID=\(vote.itemID) up=\(item.upVotes.count) down=\(item.downVotes.count)")
+
+            // Schedule slot restoration after per-item cooldown and update guests
+            let cooldownSeconds = TimeInterval(perItemCooldownMinutes * 60)
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(cooldownSeconds * 1_000_000_000))
+                await MainActor.run {
+                    self?.restoreSlot(for: vote.memberID)
+                    self?.broadcastSnapshot()
+                }
+            }
             return
         }
 
-        // Item muss existieren
-        guard let idx = state.queue.firstIndex(where: { $0.id == vote.itemID }) else { return }
+        let isCurrent = (state.nowPlayingItemID == vote.itemID)
+        let isNext = isNextUp(itemID: vote.itemID)
+        let played = isPlayed(itemID: vote.itemID)
+        let prevDecision = memberDecisions[vote.itemID]?[vote.memberID]
+        let prevTime = lastMemberItemVoteAt[vote.memberID]?[vote.itemID]
+        let withinGrace = (prevTime != nil) ? (now.timeIntervalSince(prevTime!) < 1.0) : false
+
+        if let prev = prevDecision, withinGrace {
+            // Allow override within 1s: revert previous vote and apply new one
+            var item = state.queue[idx]
+            switch prev {
+            case .up: item.upVotes.remove(vote.memberID)
+            case .down: item.downVotes.remove(vote.memberID)
+            }
+            switch vote.direction {
+            case .up: item.upVotes.insert(vote.memberID)
+            case .down: item.downVotes.insert(vote.memberID)
+            }
+            state.queue[idx] = item
+            memberDecisions[vote.itemID]?[vote.memberID] = vote.direction
+            var map = lastMemberItemVoteAt[vote.memberID] ?? [:]
+            map[vote.itemID] = now
+            lastMemberItemVoteAt[vote.memberID] = map
+
+            // Respect exclusions: current item ignored, next-up cannot be promoted by up
+            if isCurrent {
+                DebugLog.shared.add("HOST", "override ignored (now playing)")
+                return
+            }
+            if vote.direction == .up && isNext {
+                DebugLog.shared.add("HOST", "override up blocked (next up)")
+                broadcastSnapshot()
+                return
+            }
+
+            if votingEngineEnabled {
+                applyVoteOutcomeIfNeeded(for: vote.itemID, preferred: vote.direction)
+            }
+            broadcastSnapshot()
+            return
+        }
+
+        // REMOVE THIS block which spent slot globally after cooldown, before isCurrent/isNext/played:
+        /*
+        guard trySpendSlot(for: vote.memberID) else {
+            DebugLog.shared.add("HOST", "vote ignored (no action slots) member=\(vote.memberID)")
+            return
+        }
+        broadcastSnapshot()
+        */
+
+        guard perItemLimiter.spend(memberID: vote.memberID, itemID: vote.itemID) else {
+            var remaining: String = "?"
+            if var lim = Optional(self.perItemLimiter) { // copy to call mutating helper safely
+                if let r = lim.remainingCooldown(memberID: vote.memberID, itemID: vote.itemID) {
+                    remaining = String(Int(r.rounded()))
+                }
+            }
+            let df = DateFormatter()
+            df.dateFormat = "HH:mm:ss.SSS"
+            let nowStr = df.string(from: Date())
+            DebugLog.shared.add("HOST", "\(nowStr) vote ignored (cooldown) member=\(vote.memberID) item=\(vote.itemID) remaining=\(remaining)s")
+            restoreSlot(for: vote.memberID)
+            return
+        }
 
         // NowPlaying ausgenommen
-        if state.nowPlayingItemID == vote.itemID {
+        if isCurrent {
             DebugLog.shared.add("HOST", "vote ignored (now playing) itemID=\(vote.itemID)")
+            restoreSlot(for: vote.memberID)
             return
         }
 
         // Up auf Next-Up blocken, Down auf Next-Up erlauben
-        if vote.direction == .up, isNextUp(itemID: vote.itemID) {
+        if vote.direction == .up, isNext {
             DebugLog.shared.add("HOST", "vote ignored (next up / up blocked) itemID=\(vote.itemID)")
+            restoreSlot(for: vote.memberID)
             return
         }
 
         // Played tracks: disable up/down for removal/promote, but allow voting to send to end via DOWN direction
-        if isPlayed(itemID: vote.itemID) {
+        if played {
+            // Spend an action slot for this vote
+            guard trySpendSlot(for: vote.memberID) else {
+                DebugLog.shared.add("HOST", "vote ignored (no action slots) member=\(vote.memberID)")
+                return
+            }
+            broadcastSnapshot()
+
             // Interpret any vote as a request to send to end, count using upVotes for visibility
             memberDecisions[vote.itemID, default: [:]][vote.memberID] = vote.direction
             var item = state.queue[idx]
             item.upVotes.insert(vote.memberID)
             state.queue[idx] = item
-            applyPlayedOutcomeIfNeeded(for: vote.itemID)
+
+            if votingEngineEnabled {
+                applyPlayedOutcomeIfNeeded(for: vote.itemID)
+            }
+
+            // Schedule slot restoration after per-item cooldown and update guests
+            let cooldownSeconds = TimeInterval(perItemCooldownMinutes * 60)
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(cooldownSeconds * 1_000_000_000))
+                await MainActor.run {
+                    self?.restoreSlot(for: vote.memberID)
+                    self?.broadcastSnapshot()
+                }
+            }
             broadcastSnapshot()
             return
         }
 
-        // Pro Member nur 1 Entscheidung pro Item (bis Item entfernt wird)
-        if let existing = memberDecisions[vote.itemID]?[vote.memberID] {
-            DebugLog.shared.add(
-                "HOST",
-                "vote ignored (already decided \(existing)) member=\(vote.memberID) item=\(vote.itemID)"
-            )
-            return
+        // Erlaube neue Entscheidung nach abgelaufenem Cooldown: entferne vorherige Entscheidung, falls vorhanden
+        if let prev = memberDecisions[vote.itemID]?[vote.memberID] {
+            var item = state.queue[idx]
+            switch prev {
+            case .up: item.upVotes.remove(vote.memberID)
+            case .down: item.downVotes.remove(vote.memberID)
+            }
+            state.queue[idx] = item
         }
 
+        // Insert spending slot here, before applying vote in normal engine-ON path
+        guard trySpendSlot(for: vote.memberID) else {
+            DebugLog.shared.add("HOST", "vote ignored (no action slots) member=\(vote.memberID)")
+            return
+        }
+        broadcastSnapshot()
+
         memberDecisions[vote.itemID, default: [:]][vote.memberID] = vote.direction
+        var map = lastMemberItemVoteAt[vote.memberID] ?? [:]
+        map[vote.itemID] = now
+        lastMemberItemVoteAt[vote.memberID] = map
 
         var item = state.queue[idx]
         switch vote.direction {
@@ -379,21 +549,31 @@ final class PartyHostController: ObservableObject {
         }
         state.queue[idx] = item
 
+        let cooldownSeconds = TimeInterval(perItemCooldownMinutes * 60)
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(cooldownSeconds * 1_000_000_000))
+            await MainActor.run {
+                self?.restoreSlot(for: vote.memberID)
+                self?.broadcastSnapshot()
+            }
+        }
+
         // Debug wie bei Dir
         let guestCount = state.members.filter { $0.isAdmitted }.count
         DebugLog.shared.add(
             "HOST",
-            "vote received dir=\(vote.direction) itemID=\(vote.itemID) up=\(state.queue[idx].upVotes.count) down=\(state.queue[idx].downVotes.count) guests=\(guestCount)"
+            "vote received dir=\(vote.direction) itemID=\(vote.itemID) up=\(state.queue[idx].upVotes.count) down=\(state.queue[idx].downVotes.count) guests=\(guestCount) isNext=\(isNext) played=\(played)"
         )
 
-        applyVoteOutcomeIfNeeded(for: vote.itemID)
+        if votingEngineEnabled {
+            applyVoteOutcomeIfNeeded(for: vote.itemID, preferred: vote.direction)
+        }
         broadcastSnapshot()
     }
 
-    private func applyVoteOutcomeIfNeeded(for itemID: UUID) {
+    private func applyVoteOutcomeIfNeeded(for itemID: UUID, preferred: PartyMessage.VoteDirection? = nil) {
         guard let idx = state.queue.firstIndex(where: { $0.id == itemID }) else { return }
         let item = state.queue[idx]
-        let isNext = isNextUp(itemID: itemID)
 
         // NowPlaying nie anfassen
         if state.nowPlayingItemID == itemID { return }
@@ -402,36 +582,62 @@ final class PartyHostController: ObservableObject {
         let guestCount = state.members.filter { $0.isAdmitted }.count
         let threshold = max(1, (guestCount + 1) / 2) // >= 50%: for 1 guest -> 1
 
-        // Early exit if no votes yet
         let up = item.upVotes.count
         let down = item.downVotes.count
-        guard up >= threshold || down >= threshold else { return }
+        let isNext = isNextUp(itemID: itemID)
 
-        if up >= threshold && !isNext {
-            if votingMode == .automatic {
-                moveBehindNowPlaying(itemID: itemID)
-                clearVotes(itemID: itemID)
-                DebugLog.shared.add("HOST", "vote outcome UP (auto moved) itemID=\(itemID) threshold=\(threshold)")
+        DebugLog.shared.add("HOST", "eval itemID=\(itemID) up=\(up) down=\(down) threshold=\(threshold) isNext=\(isNext) preferred=\(String(describing: preferred))")
+
+        // 1) DOWN vor UP auswerten (und wenn preferred == .down, dann ausschließlich DOWN betrachten)
+        if down >= threshold {
+            if votingEngineEnabled && processDownOutcomes {
+                if votingMode == .automatic {
+                    clearAllVotesAndDecisions(itemID: itemID)
+                    removeFromQueue(itemID: itemID)
+                    DebugLog.shared.add("HOST", "vote outcome DOWN (auto removed, cleared counts+decisions) itemID=\(itemID) threshold=\(threshold)")
+                } else {
+                    enqueuePendingOutcome(itemID: itemID, kind: .removeFromQueue, threshold: threshold)
+                }
             } else {
-                enqueuePendingOutcome(itemID: itemID, kind: .promoteNext, threshold: threshold)
+                DebugLog.shared.add("HOST", "DOWN reached but engine/toggle disabled for down")
             }
             return
-        } else if up >= threshold && isNext {
-            DebugLog.shared.add("HOST", "UP outcome blocked for Next-Up itemID=\(itemID) (no promote while next-up)")
+        } else if preferred == .down {
+            // Bei unmittelbarer DOWN-Aktion keine UP-Promotion im selben Tick zulassen
+            return
         }
 
-        if down >= threshold {
-            if votingMode == .automatic {
-                removeFromQueue(itemID: itemID)
-                DebugLog.shared.add("HOST", "vote outcome DOWN (auto removed) itemID=\(itemID) threshold=\(threshold)")
+        // 2) UP nur wenn nicht Next-Up und kein konkurrierender DOWN die Schwelle erreicht
+        if up >= threshold && down < threshold && !isNext {
+            if votingEngineEnabled && processUpOutcomes {
+                if votingMode == .automatic {
+                    moveBehindNowPlaying(itemID: itemID)
+                    clearVotes(itemID: itemID)
+                    DebugLog.shared.add("HOST", "vote outcome UP (auto moved) itemID=\(itemID) threshold=\(threshold)")
+                } else {
+                    enqueuePendingOutcome(itemID: itemID, kind: .promoteNext, threshold: threshold)
+                }
             } else {
-                enqueuePendingOutcome(itemID: itemID, kind: .removeFromQueue, threshold: threshold)
+                DebugLog.shared.add("HOST", "UP reached but engine/toggle disabled for up or next-up blocked")
             }
             return
+        }
+
+        if up >= threshold && isNext {
+            DebugLog.shared.add("HOST", "UP outcome blocked for Next-Up itemID=\(itemID) (no promote while next-up)")
         }
     }
 
     private func enqueuePendingOutcome(itemID: UUID, kind: PendingVoteOutcome.Kind, threshold: Int) {
+        guard votingEngineEnabled else { return }
+        switch kind {
+        case .removeFromQueue:
+            guard processDownOutcomes else { return }
+        case .promoteNext:
+            guard processUpOutcomes else { return }
+        case .sendToEnd:
+            guard processSendToEndOutcomes else { return }
+        }
         // avoid duplicates
         if pendingVoteOutcomes.contains(where: { $0.itemID == itemID && $0.kind == kind }) { return }
         pendingVoteOutcomes.insert(
@@ -474,12 +680,16 @@ final class PartyHostController: ObservableObject {
         let threshold = max(1, (guestCount + 1) / 2)
 
         if state.queue[idx].upVotes.count >= threshold {
-            if votingMode == .automatic {
-                sendToEnd(itemID: itemID)
-                clearVotes(itemID: itemID)
-                DebugLog.shared.add("HOST", "played outcome SEND_TO_END (auto) itemID=\(itemID) threshold=\(threshold)")
+            if votingEngineEnabled && processSendToEndOutcomes {
+                if votingMode == .automatic {
+                    sendToEnd(itemID: itemID)
+                    clearVotes(itemID: itemID)
+                    DebugLog.shared.add("HOST", "played outcome SEND_TO_END (auto) itemID=\(itemID) threshold=\(threshold)")
+                } else {
+                    enqueuePendingOutcome(itemID: itemID, kind: .sendToEnd, threshold: threshold)
+                }
             } else {
-                enqueuePendingOutcome(itemID: itemID, kind: .sendToEnd, threshold: threshold)
+                DebugLog.shared.add("HOST", "SEND_TO_END reached but engine/toggle disabled")
             }
         }
     }
@@ -515,11 +725,38 @@ final class PartyHostController: ObservableObject {
         state.queue[idx].upVotes = []
         state.queue[idx].downVotes = []
     }
+    
+    /// Clears vote counts and member decisions for the specified item
+    private func clearAllVotesAndDecisions(itemID: UUID) {
+        memberDecisions[itemID] = nil
+        guard let idx = state.queue.firstIndex(where: { $0.id == itemID }) else { return }
+        state.queue[idx].upVotes = []
+        state.queue[idx].downVotes = []
+    }
 
     // MARK: - Snapshot / send helpers
 
     private func broadcastSnapshot() {
-        Task { await send(.stateSnapshot(.init(state: state))) }
+        Task { @MainActor in
+            // If we know peers, send personalized snapshots; else send generic
+            if !mpc.connectedPeers.isEmpty {
+                for peer in mpc.connectedPeers {
+                    let memberID = peerToMember[peer] ?? hostMemberID
+                    var cooldowns: [UUID: Double] = [:]
+                    // Copy limiter to call mutating helpers safely
+                    var lim = self.perItemLimiter
+                    for item in state.queue {
+                        if let remaining = lim.remainingCooldown(memberID: memberID, itemID: item.id) {
+                            cooldowns[item.id] = max(0, remaining)
+                        }
+                    }
+                    let snap = PartyMessage.StateSnapshot(state: state, cooldowns: cooldowns, remainingActionSlots: remainingSlots(for: memberID))
+                    await send(.stateSnapshot(snap), to: peer)
+                }
+            } else {
+                await send(.stateSnapshot(.init(state: state)))
+            }
+        }
     }
 
     private func send(_ msg: PartyMessage, to peer: MCPeerID? = nil) async {

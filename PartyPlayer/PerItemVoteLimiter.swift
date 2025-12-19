@@ -44,4 +44,18 @@ struct PerItemVoteLimiter {
             lastVoteAt[member] = map
         }
     }
+
+    mutating func remainingCooldown(memberID: MemberID, itemID: UUID, now: Date = Date()) -> TimeInterval? {
+        let memberMap = lastVoteAt[memberID] ?? [:]
+        guard let last = memberMap[itemID] else { return nil }
+        let elapsed = now.timeIntervalSince(last)
+        let remaining = cooldown - elapsed
+        return max(0, remaining)
+    }
+
+    mutating func nextAvailableDate(memberID: MemberID, itemID: UUID, now: Date = Date()) -> Date? {
+        let memberMap = lastVoteAt[memberID] ?? [:]
+        guard let last = memberMap[itemID] else { return nil }
+        return last.addingTimeInterval(cooldown)
+    }
 }

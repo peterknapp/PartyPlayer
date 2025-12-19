@@ -17,6 +17,9 @@ final class PartyGuestController: ObservableObject {
     @Published var status: Status = .idle
     @Published private(set) var state: PartyState?
     @Published private(set) var nowPlaying: PartyMessage.NowPlayingPayload?
+    @Published private(set) var itemCooldowns: [UUID: Double] = [:]
+    @Published private(set) var lastSnapshotAt: Date = Date()
+    @Published private(set) var remainingActionSlots: Int = 3
 
     let memberID: MemberID = DeviceIdentity.memberID()
 
@@ -40,6 +43,10 @@ final class PartyGuestController: ObservableObject {
 
     private var targetPeer: MCPeerID?
     private var didSendJoin: Bool = false
+    @Published var sendUpVotesEnabled: Bool = true
+    @Published var sendDownVotesEnabled: Bool = true
+    private var pendingVoteTasks: [UUID: Task<Void, Never>] = [:]
+    private var lastVoteTapAt: [UUID: Date] = [:]
 
     init(displayName: String, hasAppleMusic: Bool, locationService: LocationService) {
         self.displayName = displayName
@@ -196,8 +203,20 @@ final class PartyGuestController: ObservableObject {
 
     // MARK: - Actions
 
-    func voteUp(itemID: UUID) { Task { await sendVote(itemID: itemID, dir: .up) } }
-    func voteDown(itemID: UUID) { Task { await sendVote(itemID: itemID, dir: .down) } }
+    func voteUp(itemID: UUID) {
+        if !sendUpVotesEnabled {
+            DebugLog.shared.add("GUEST", "voteUp suppressed (sendUpVotesEnabled=false) itemID=\(itemID)")
+            return
+        }
+        scheduleVote(itemID: itemID, dir: .up)
+    }
+    func voteDown(itemID: UUID) {
+        if !sendDownVotesEnabled {
+            DebugLog.shared.add("GUEST", "voteDown suppressed (sendDownVotesEnabled=false) itemID=\(itemID)")
+            return
+        }
+        scheduleVote(itemID: itemID, dir: .down)
+    }
 
     func requestSkip(itemID: UUID) {
         let msg = PartyMessage.skipRequest(.init(memberID: memberID, itemID: itemID, timestamp: Date()))
@@ -207,7 +226,31 @@ final class PartyGuestController: ObservableObject {
         }
     }
 
+    private func scheduleVote(itemID: UUID, dir: PartyMessage.VoteDirection) {
+        if (dir == .up && !sendUpVotesEnabled) || (dir == .down && !sendDownVotesEnabled) {
+            DebugLog.shared.add("GUEST", "schedule suppressed dir=\(dir) itemID=\(itemID) upEnabled=\(sendUpVotesEnabled) downEnabled=\(sendDownVotesEnabled)")
+            return
+        }
+        // Cancel any pending send for this item
+        pendingVoteTasks[itemID]?.cancel()
+
+        // Record latest tap time
+        lastVoteTapAt[itemID] = Date()
+
+        // Debounce: only send the last vote after 120ms
+        let task = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard let self else { return }
+            // If another task replaced this one, this task would be cancelled
+            if Task.isCancelled { return }
+            await self.sendVote(itemID: itemID, dir: dir)
+        }
+
+        pendingVoteTasks[itemID] = task
+    }
+
     private func sendVote(itemID: UUID, dir: PartyMessage.VoteDirection) async {
+        DebugLog.shared.add("GUEST", "sendVote dir=\(dir) itemID=\(itemID)")
         let msg = PartyMessage.vote(.init(memberID: memberID, itemID: itemID, direction: dir, timestamp: Date()))
         guard let peer = targetPeer else { return }
         await send(msg, to: peer)
@@ -233,7 +276,11 @@ final class PartyGuestController: ObservableObject {
                 
             case .stateSnapshot(let snap):
                 state = snap.state
+                itemCooldowns = snap.cooldowns ?? [:]
+                lastSnapshotAt = Date()
 
+                if let slots = snap.remainingActionSlots { self.remainingActionSlots = slots }
+                
             case .nowPlaying(let np):
                 self.nowPlaying = np
 //                DebugLog.shared.add(
@@ -284,3 +331,4 @@ final class PartyGuestController: ObservableObject {
         mpc.startBrowsing()
     }
 }
+

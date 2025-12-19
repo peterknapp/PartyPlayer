@@ -389,7 +389,9 @@ struct HostView: View {
               let nowIdx = host.state.queue.firstIndex(where: { $0.id == nowID }) else {
             return host.state.queue
         }
-        return Array(host.state.queue[nowIdx...])
+        let nextIndex = nowIdx + 1
+        guard host.state.queue.indices.contains(nextIndex) else { return [] }
+        return Array(host.state.queue[nextIndex...])
     }
 
     private var playedItems: [QueueItem] {
@@ -535,12 +537,20 @@ struct GuestView: View {
     @ObservedObject var guest: PartyGuestController
     @Binding var showScanner: Bool
 
+    @State private var tick: Int = 0
+
     var body: some View {
         VStack(spacing: 12) {
             Button("QR scannen & beitreten") { showScanner = true }
 
             Text(statusText)
                 .font(.headline)
+            
+            if guest.status == .admitted {
+                Text("Aktionen verfügbar: \(guest.remainingActionSlots)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if let state = guest.state {
                 if let card = nowPlayingCard(state: state) {
@@ -548,10 +558,15 @@ struct GuestView: View {
                 }
 
                 playlist(state: state)
-                    .frame(height: 320)
+                    .frame(maxHeight: .infinity, alignment: .top)
             }
         }
         .padding()
+        .onReceive(Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()) { _ in
+            if guest.status == .admitted {
+                tick &+= 1
+            }
+        }
     }
 
     // MARK: - Voting availability
@@ -598,19 +613,47 @@ struct GuestView: View {
     private func playlist(state: PartyState) -> some View {
         let canInteract = (guest.status == .admitted)
 
-        return ScrollViewReader { proxy in
-            List {
-                ForEach(state.queue) { item in
-                    guestQueueRow(
-                        state: state,
-                        item: item,
-                        canInteract: canInteract,
-                        nowPlayingID: guest.nowPlaying?.nowPlayingItemID,
-                        nowPlayingPos: guest.nowPlaying?.positionSeconds ?? 0
-                    )
-                    .id(item.id)
+        // Derive played and upcoming arrays
+        let nowID = state.nowPlayingItemID
+        let nowIdx = nowID.flatMap { id in state.queue.firstIndex(where: { $0.id == id }) }
+        let played: [QueueItem] = {
+            if let idx = nowIdx { return Array(state.queue[..<idx]) }
+            return []
+        }()
+        let upcoming: [QueueItem] = {
+            if let idx = nowIdx {
+                let nextIndex = idx + 1
+                if state.queue.indices.contains(nextIndex) {
+                    return Array(state.queue[nextIndex...])
+                } else {
+                    return []
                 }
             }
+            return state.queue
+        }()
+
+        return ScrollViewReader { proxy in
+            List {
+                Section("Bevorstehend") {
+                    ForEach(upcoming) { item in
+                        guestQueueRow(
+                            state: state,
+                            item: item,
+                            canInteract: canInteract,
+                            nowPlayingID: guest.nowPlaying?.nowPlayingItemID,
+                            nowPlayingPos: guest.nowPlaying?.positionSeconds ?? 0
+                        )
+                        .id(item.id)
+                    }
+                }
+                Section("Bereits gespielt") {
+                    ForEach(played) { item in
+                        playedGuestRow(state: state, item: item, canInteract: canInteract)
+                            .id(item.id)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
             .onChange(of: guest.nowPlaying?.nowPlayingItemID) { _, newValue in
                 guard let id = newValue else { return }
                 DispatchQueue.main.async {
@@ -689,8 +732,6 @@ struct GuestView: View {
         )
     }
 
-    // MARK: - Row
-
     private func guestQueueRow(
         state: PartyState,
         item: QueueItem,
@@ -705,6 +746,15 @@ struct GuestView: View {
         let total = max(1, item.durationSeconds ?? 240)
         let pos = min(max(0, nowPlayingPos), total)
         let remaining = max(0, total - pos)
+
+        let baseRemaining = guest.itemCooldowns[item.id] ?? 0
+        let elapsed = Date().timeIntervalSince(guest.lastSnapshotAt)
+        let remainingCooldown = max(0, baseRemaining - elapsed)
+        let isCoolingDown = remainingCooldown > 0.5
+
+        // Removed line:
+        // let alreadyDecided = guest.decidedItems.contains(item.id)
+        let hasSlots = guest.remainingActionSlots > 0
 
         return VStack(spacing: 8) {
             headerRow(item: item, isCurrent: isCurrent, pos: pos, remaining: remaining, total: total)
@@ -721,8 +771,18 @@ struct GuestView: View {
 
                 Spacer()
 
+                if isCoolingDown {
+                    Text("Cooldown: \(shortCooldownString(remainingCooldown))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 VoteButtons(
-                    availability: availability,
+                    availability: VoteAvailability(
+                        canUp: availability.canUp && !isCoolingDown && hasSlots,
+                        canDown: availability.canDown && !isCoolingDown && hasSlots,
+                        opacity: (isCoolingDown || !hasSlots) ? 0.55 : availability.opacity
+                    ),
                     upAction: { guest.voteUp(itemID: item.id) },
                     downAction: { guest.voteDown(itemID: item.id) }
                 )
@@ -730,6 +790,41 @@ struct GuestView: View {
         }
         .padding(.vertical, 8)
         .listRowBackground(isCurrent ? Color.primary.opacity(0.06) : Color.clear)
+    }
+
+    private func playedGuestRow(state: PartyState, item: QueueItem, canInteract: Bool) -> some View {
+        let baseRemaining = guest.itemCooldowns[item.id] ?? 0
+        let elapsed = Date().timeIntervalSince(guest.lastSnapshotAt)
+        let remainingCooldown = max(0, baseRemaining - elapsed)
+        let isCoolingDown = remainingCooldown > 0.5
+        let hasSlots = guest.remainingActionSlots > 0
+
+        return HStack(spacing: 12) {
+            ArtworkThumbView(urlString: item.artworkURL, size: 44)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.title).font(.headline).lineLimit(1)
+                Text(item.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 10) {
+                    Text("Votes \(item.upVotes.count)")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 4) {
+                if isCoolingDown {
+                    Text("Cooldown: \(shortCooldownString(remainingCooldown))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Button("Ans Ende") {
+                    // Request host approval to send to end for played items
+                    guest.voteDown(itemID: item.id) // leverage existing logic: host interprets played votes as send-to-end
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canInteract || isCoolingDown || !hasSlots)
+            }
+        }
     }
 
     private func headerRow(
@@ -774,15 +869,40 @@ struct GuestView: View {
         let upAction: () -> Void
         let downAction: () -> Void
 
+        @State private var tapLocked = false
+
         var body: some View {
             HStack(spacing: 12) {
-                Button("Up", action: upAction)
-                    .disabled(!availability.canUp)
+                Button("Up") {
+                    DebugLog.shared.add("GUEST-UI", "tap Up canUp=\(availability.canUp) tapLocked=\(tapLocked)")
+                    guard availability.canUp, !tapLocked else {
+                        DebugLog.shared.add("GUEST-UI", "ignored Up (disabled or locked)")
+                        return
+                    }
+                    tapLocked = true
+                    upAction()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { tapLocked = false }
+                }
+                .buttonStyle(.bordered)
+                .disabled(!availability.canUp)
+                .frame(minWidth: 68)
+                .contentShape(Rectangle())
 
-                Button("Down", action: downAction)
-                    .disabled(!availability.canDown)
+                Button("Down") {
+                    DebugLog.shared.add("GUEST-UI", "tap Down canDown=\(availability.canDown) tapLocked=\(tapLocked)")
+                    guard availability.canDown, !tapLocked else {
+                        DebugLog.shared.add("GUEST-UI", "ignored Down (disabled or locked)")
+                        return
+                    }
+                    tapLocked = true
+                    downAction()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { tapLocked = false }
+                }
+                .buttonStyle(.bordered)
+                .disabled(!availability.canDown)
+                .frame(minWidth: 68)
+                .contentShape(Rectangle())
             }
-            .opacity(availability.opacity)
         }
     }
 
@@ -804,6 +924,17 @@ struct GuestView: View {
         let m = s / 60
         let r = s % 60
         return String(format: "%d:%02d", m, r)
+    }
+
+    private func shortCooldownString(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        if s < 60 { return "\(s)s" }
+        let m = s / 60
+        let r = s % 60
+        if m < 60 { return String(format: "%dm %02ds", m, r) }
+        let h = m / 60
+        let mm = m % 60
+        return String(format: "%dh %02dm", h, mm)
     }
 }
 
@@ -843,3 +974,4 @@ private struct ArtworkThumbView: View {
         }
     }
 }
+
