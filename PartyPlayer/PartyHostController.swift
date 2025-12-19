@@ -393,6 +393,7 @@ final class PartyHostController: ObservableObject {
     private func applyVoteOutcomeIfNeeded(for itemID: UUID) {
         guard let idx = state.queue.firstIndex(where: { $0.id == itemID }) else { return }
         let item = state.queue[idx]
+        let isNext = isNextUp(itemID: itemID)
 
         // NowPlaying nie anfassen
         if state.nowPlayingItemID == itemID { return }
@@ -406,7 +407,7 @@ final class PartyHostController: ObservableObject {
         let down = item.downVotes.count
         guard up >= threshold || down >= threshold else { return }
 
-        if up >= threshold {
+        if up >= threshold && !isNext {
             if votingMode == .automatic {
                 moveBehindNowPlaying(itemID: itemID)
                 clearVotes(itemID: itemID)
@@ -415,6 +416,8 @@ final class PartyHostController: ObservableObject {
                 enqueuePendingOutcome(itemID: itemID, kind: .promoteNext, threshold: threshold)
             }
             return
+        } else if up >= threshold && isNext {
+            DebugLog.shared.add("HOST", "UP outcome blocked for Next-Up itemID=\(itemID) (no promote while next-up)")
         }
 
         if down >= threshold {
