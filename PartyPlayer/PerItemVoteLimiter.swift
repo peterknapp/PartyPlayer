@@ -4,12 +4,16 @@
 import Foundation
 
 struct PerItemVoteLimiter {
-    private let cooldown: TimeInterval
+    private var cooldown: TimeInterval
     // last vote timestamp per item per member
     private var lastVoteAt: [MemberID: [UUID: Date]] = [:]
 
     init(cooldown: TimeInterval = 20 * 60) {
         self.cooldown = cooldown
+    }
+
+    mutating func setCooldown(minutes: Int) {
+        self.cooldown = TimeInterval(max(0, minutes) * 60)
     }
 
     mutating func canSpend(memberID: MemberID, itemID: UUID, now: Date = Date()) -> Bool {
