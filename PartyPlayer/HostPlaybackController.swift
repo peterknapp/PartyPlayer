@@ -7,13 +7,36 @@ final class HostPlaybackController: ObservableObject {
     @Published private(set) var isAuthorized = false
     @Published private(set) var isPlaying = false
 
-    private let player = SystemMusicPlayer.shared
     private var tickTask: Task<Void, Never>?
+
+    private let systemPlayer = SystemMusicPlayer.shared
+    private let appPlayer = ApplicationMusicPlayer.shared
+
+    private var isRunningOnMac: Bool {
+        #if os(macOS)
+        return true
+        #else
+        if #available(iOS 14.0, *) {
+            if ProcessInfo.processInfo.isiOSAppOnMac { return true }
+            if ProcessInfo.processInfo.isMacCatalystApp { return true }
+        }
+        return false
+        #endif
+    }
+
+    private var playbackStatus: MusicPlayer.PlaybackStatus {
+        isRunningOnMac ? appPlayer.state.playbackStatus : systemPlayer.state.playbackStatus
+    }
+
+    private var playbackTime: TimeInterval {
+        isRunningOnMac ? appPlayer.playbackTime : systemPlayer.playbackTime
+    }
 
     func requestAuthorization() async {
         let status = await MusicAuthorization.request()
         isAuthorized = (status == .authorized)
         DebugLog.shared.add("MUSIC", "authorization status=\(status)")
+        DebugLog.shared.add("MUSIC", "authorization currentStatus=\(MusicAuthorization.currentStatus)")
     }
 
     func searchCatalogSongs(for terms: [String]) async throws -> [Song] {
@@ -51,8 +74,13 @@ final class HostPlaybackController: ObservableObject {
     /// Queue direkt aus Songs setzen (Songs sind PlayableMusicItem)
     func setQueue(withSongs songs: [Song]) async throws {
         guard !songs.isEmpty else { return }
-        player.queue = MusicPlayer.Queue(for: songs)
+        if isRunningOnMac {
+            appPlayer.queue = ApplicationMusicPlayer.Queue(for: songs)
+        } else {
+            systemPlayer.queue = MusicPlayer.Queue(for: songs)
+        }
         DebugLog.shared.add("MUSIC", "queue set: \(songs.count) songs")
+        diagnoseEnvironment()
     }
 
     // MARK: - Search helper (needed by PartyHostController.loadDemoAndPlay)
@@ -94,6 +122,13 @@ final class HostPlaybackController: ObservableObject {
         return result
     }
 
+    func diagnoseEnvironment(prefix: String = "MUSIC") {
+        let status = MusicAuthorization.currentStatus
+        let playbackStatus = self.playbackStatus
+        let time = self.playbackTime
+        DebugLog.shared.add(prefix, "diag authStatus=\(status) playbackStatus=\(playbackStatus) time=\(time)")
+    }
+
     // MARK: - Queue
 
     /// catalogSongIDs = Apple Music Song IDs als String, z.B. "203709340"
@@ -112,27 +147,51 @@ final class HostPlaybackController: ObservableObject {
             ])
         }
 
-        player.queue = MusicPlayer.Queue(for: songs)
+        if isRunningOnMac {
+            appPlayer.queue = ApplicationMusicPlayer.Queue(for: songs)
+        } else {
+            systemPlayer.queue = MusicPlayer.Queue(for: songs)
+        }
         DebugLog.shared.add("MUSIC", "queue set: \(songs.count) songs")
     }
 
     // MARK: - Playback
 
     func play() async throws {
-        DebugLog.shared.add("MUSIC", "play()")
-        try await player.play()
+        DebugLog.shared.add("MUSIC", "play() auth=\(MusicAuthorization.currentStatus) isAuthorized=\(isAuthorized)")
+        guard isAuthorized else {
+            throw NSError(
+                domain: "HostPlaybackController",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Music-Autorisierung fehlt. Bitte in der Musik-App anmelden und Zugriff erlauben."]
+            )
+        }
+        if isRunningOnMac {
+            try await appPlayer.play()
+        } else {
+            try await systemPlayer.play()
+        }
         isPlaying = true
     }
 
     func pause() {
         DebugLog.shared.add("MUSIC", "pause()")
-        player.pause()
+        if isRunningOnMac {
+            appPlayer.pause()
+        } else {
+            systemPlayer.pause()
+        }
         isPlaying = false
     }
 
     func skipToNext() async throws {
         DebugLog.shared.add("MUSIC", "skipToNextEntry()")
-        try await player.skipToNextEntry()
+        if isRunningOnMac {
+            try await appPlayer.skipToNextEntry()
+        } else {
+            try await systemPlayer.skipToNextEntry()
+        }
+        diagnoseEnvironment()
     }
 
     // MARK: - Polling (simple + robust)
@@ -145,8 +204,8 @@ final class HostPlaybackController: ObservableObject {
         tickTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
-                let pos = self.player.playbackTime
-                let playing = (self.player.state.playbackStatus == .playing)
+                let pos = self.playbackTime
+                let playing = (self.playbackStatus == .playing)
                 await MainActor.run { self.isPlaying = playing }
                 onTick(playing, pos)
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))

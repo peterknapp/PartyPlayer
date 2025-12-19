@@ -122,15 +122,15 @@ struct QRScannerView: UIViewControllerRepresentable {
             }
         }
         
-        func metadataOutput(_ output: AVCaptureMetadataOutput,
+        nonisolated func metadataOutput(_ output: AVCaptureMetadataOutput,
                             didOutput metadataObjects: [AVMetadataObject],
                             from connection: AVCaptureConnection) {
             guard let obj = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
                   obj.type == .qr,
                   let string = obj.stringValue else { return }
 
-            // UI callbacks on main
-            DispatchQueue.main.async { [weak self] in
+            // Hop back to the main actor explicitly to interact with UI
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.onCode?(string)
                 self.dismiss(animated: true)

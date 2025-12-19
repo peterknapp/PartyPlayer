@@ -150,6 +150,12 @@ final class PartyHostController: ObservableObject {
 
     func loadDemoAndPlay() {
         Task {
+            // Ensure MusicKit authorization before proceeding
+            await self.playback.requestAuthorization()
+            guard self.playback.isAuthorized else {
+                DebugLog.shared.add("MUSIC", "authorization denied or not available; aborting demo load")
+                return
+            }
             do {
                 let terms = [
                     "Daft Punk One More Time",
@@ -191,6 +197,7 @@ final class PartyHostController: ObservableObject {
                 DebugLog.shared.add("HOST", "demo queue loaded + playing")
             } catch {
                 DebugLog.shared.add("HOST", "demo failed: \(error.localizedDescription)")
+                DebugLog.shared.add("MUSIC", "post-failure authStatus=\(MusicAuthorization.currentStatus)")
             }
         }
     }
@@ -205,6 +212,7 @@ final class PartyHostController: ObservableObject {
                 }
             } catch {
                 DebugLog.shared.add("HOST", "play/pause failed: \(error.localizedDescription)")
+                self.playback.diagnoseEnvironment(prefix: "MUSIC")
             }
         }
     }

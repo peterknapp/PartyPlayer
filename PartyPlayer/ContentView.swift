@@ -4,7 +4,14 @@ import Combine
 struct ContentView: View {
     @StateObject private var locationService = LocationService()
 
-    @State private var displayName: String = UIDevice.current.name
+    @State private var displayName: String = {
+        #if os(macOS)
+        return ""
+        #else
+        return UIDevice.current.name
+        #endif
+    }()
+
     @State private var mode: Mode? = nil
 
     @StateObject private var hostHolder = HostHolder()
@@ -15,6 +22,18 @@ struct ContentView: View {
     #if DEBUG
     @State private var showDebugOverlay = false
     #endif
+
+    private var isRunningOnMac: Bool {
+        #if os(macOS)
+        return true
+        #else
+        if #available(iOS 14.0, *) {
+            if ProcessInfo.processInfo.isiOSAppOnMac { return true }
+            if ProcessInfo.processInfo.isMacCatalystApp { return true }
+        }
+        return false
+        #endif
+    }
 
     enum Mode {
         case host
@@ -32,17 +51,23 @@ struct ContentView: View {
                     }
                 #endif
 
-                TextField("Dein Name", text: $displayName)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(.horizontal)
+                if !isRunningOnMac {
+                    TextField("Dein Name", text: $displayName)
+                        .textFieldStyle(.roundedBorder)
+                        .padding(.horizontal)
+                } else {
+                    // On Mac: no default name shown; host name will be taken from the HostView header or system name if needed.
+                }
 
                 if mode == nil {
                     HStack {
                         Button("Ich bin Host") { startHost() }
                             .disabled(mode != nil)
 
-                        Button("Ich bin Gast") { startGuest() }
-                            .disabled(mode != nil)
+                        if !isRunningOnMac {
+                            Button("Ich bin Gast") { startGuest() }
+                                .disabled(mode != nil)
+                        }
                     }
                 }
 
@@ -50,11 +75,11 @@ struct ContentView: View {
                     HostView(host: host)
                 }
 
-                if let guest = guestHolder.guest {
+                if let guest = guestHolder.guest, !isRunningOnMac {
                     GuestView(guest: guest, showScanner: $showScanner)
                 }
             }
-            .sheet(isPresented: $showScanner) {
+            .sheet(isPresented: Binding(get: { !isRunningOnMac && showScanner }, set: { show in if !isRunningOnMac { showScanner = show } })) {
                 QRScannerView { code in
                     handleScannedCode(code)
                 }
