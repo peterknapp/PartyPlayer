@@ -11,14 +11,18 @@ final class PartyHostController: ObservableObject {
     @Published private(set) var nowPlaying: PartyMessage.NowPlayingPayload? = nil
     @Published private(set) var pendingSkipRequests: [PendingSkipRequest] = []
     @Published var votingEngineEnabled: Bool = true
+    @Published var voteThresholdPercent: Int = 50
     @Published var processDownOutcomes: Bool = true
     @Published var processUpOutcomes: Bool = true
     @Published var processSendToEndOutcomes: Bool = true
     @Published private(set) var removedItems: [QueueItem] = []
 
+    // Fallback-Artwork für Public-Tab (z. B. beim ersten Start, bevor NowPlaying-IDs stabil sind)
+    @Published var publicArtworkURLString: String? = nil
+
     private let mpc: MPCService
     // Concurrent action slots per member (e.g., 3). Each spent when a vote is accepted and restored when the per-item cooldown elapses.
-    private let maxConcurrentActions = 3
+    @Published var maxConcurrentActions: Int = 3
     private var activeActions: [MemberID: Int] = [:]
 
     private var perItemLimiter = PerItemVoteLimiter()
@@ -104,9 +108,27 @@ final class PartyHostController: ObservableObject {
 
     func startHosting() {
         DebugLog.shared.add("HOST", "startHosting sessionID=\(state.sessionID)")
+        // Ensure host-side location is active for distance checks
+        locationService.requestWhenInUse()
+        locationService.start()
         mpc.startHosting(discoveryInfo: ["sessionID": state.sessionID])
         startNowPlayingBroadcast()
     }
+
+// MARK: - Location helpers
+
+    private func awaitHostLocation(maxSeconds: Double = 6.0) async -> CLLocation? {
+        let deadline = Date().addingTimeInterval(maxSeconds)
+        while Date() < deadline {
+            let auth = locationService.authorizationStatus
+            if auth == .denied || auth == .restricted { return nil }
+            if let loc = locationService.lastLocation { return loc }
+            try? await Task.sleep(nanoseconds: 200_000_000) // 0.2s
+        }
+        return locationService.lastLocation
+    }
+
+    // MARK: - Incoming
 
     func startParty(withInitialQueue items: [QueueItem]) {
         state.queue = items
@@ -185,6 +207,8 @@ final class PartyHostController: ObservableObject {
                     )
                 }
 
+                // Set initial state and public artwork fallback for Public tab
+                self.publicArtworkURLString = items.first?.artworkURL
                 state.queue = items
                 state.nowPlayingItemID = items.first?.id
 
@@ -227,6 +251,10 @@ final class PartyHostController: ObservableObject {
                     state.nowPlayingItemID = state.queue.indices.contains(nextIndex)
                         ? state.queue[nextIndex].id
                         : state.queue.last?.id
+                }
+                if let nowID = self.state.nowPlayingItemID,
+                   let nowItem = self.state.queue.first(where: { $0.id == nowID }) {
+                    self.publicArtworkURLString = nowItem.artworkURL
                 }
                 broadcastSnapshot()
             } catch {
@@ -293,15 +321,8 @@ final class PartyHostController: ObservableObject {
             return
         }
 
-        // Location check (mit kurzer Wartezeit)
-        var hostLoc = locationService.lastLocation
-        if hostLoc == nil {
-            for _ in 0..<10 {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                hostLoc = locationService.lastLocation
-                if hostLoc != nil { break }
-            }
-        }
+        // Location check (wartet robust bis zu 6s)
+        let hostLoc = await awaitHostLocation(maxSeconds: 6.0)
 
         guard let loc = req.location, let finalHostLoc = hostLoc else {
             await send(.joinDecision(.init(
@@ -589,7 +610,7 @@ final class PartyHostController: ObservableObject {
 
         // admitted Gäste zählen (Host nicht)
         let guestCount = state.members.filter { $0.isAdmitted }.count
-        let threshold = max(1, (guestCount / 2) + 1) // > 50%: for 2 guests -> 2
+        let threshold = max(1, Int(ceil(Double(guestCount) * Double(voteThresholdPercent) / 100.0)))
 
         let up = item.upVotes.count
         let down = item.downVotes.count
@@ -673,9 +694,14 @@ final class PartyHostController: ObservableObject {
     func rejectVoteOutcome(id: UUID) {
         pendingVoteOutcomes.removeAll { $0.id == id }
     }
+
+    func adminRemoveFromQueue(itemID: UUID) {
+        removeFromQueueDueToDown(itemID: itemID)
+        broadcastSnapshot()
+    }
     
     func requestSendToEndApproval(itemID: UUID) -> UUID {
-        let threshold = max(1, (state.members.filter { $0.isAdmitted }.count / 2) + 1)
+        let threshold = max(1, Int(ceil(Double(state.members.filter { $0.isAdmitted }.count) * Double(voteThresholdPercent) / 100.0)))
         let outcome = PendingVoteOutcome(id: UUID(), itemID: itemID, kind: .sendToEnd, threshold: threshold, createdAt: Date())
         pendingVoteOutcomes.insert(outcome, at: 0)
         return outcome.id
@@ -696,7 +722,7 @@ final class PartyHostController: ObservableObject {
         if !isPlayed(itemID: itemID) { return }
 
         let guestCount = state.members.filter { $0.isAdmitted }.count
-        let threshold = max(1, (guestCount / 2) + 1)
+        let threshold = max(1, Int(ceil(Double(guestCount) * Double(voteThresholdPercent) / 100.0)))
 
         if state.queue[idx].upVotes.count >= threshold {
             if votingEngineEnabled && processSendToEndOutcomes {
@@ -846,6 +872,10 @@ final class PartyHostController: ObservableObject {
                             : self.state.queue.last?.id
                     }
                     self.state.queue.removeAll { $0.id == itemID }
+                    if let nowID = self.state.nowPlayingItemID,
+                       let nowItem = self.state.queue.first(where: { $0.id == nowID }) {
+                        self.publicArtworkURLString = nowItem.artworkURL
+                    }
                     self.broadcastSnapshot()
                 } catch {
                     DebugLog.shared.add("HOST", "approveSkipRequest failed: \(error.localizedDescription)")

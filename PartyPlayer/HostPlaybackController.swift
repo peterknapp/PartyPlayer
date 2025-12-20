@@ -6,6 +6,7 @@ import MusicKit
 final class HostPlaybackController: ObservableObject {
     @Published private(set) var isAuthorized = false
     @Published private(set) var isPlaying = false
+    @Published private(set) var currentArtworkURL: URL?
 
     private var tickTask: Task<Void, Never>?
 
@@ -79,47 +80,30 @@ final class HostPlaybackController: ObservableObject {
         } else {
             systemPlayer.queue = MusicPlayer.Queue(for: songs)
         }
+        try await prepareActivePlayerToPlay()
+        updateArtwork(from: songs)
         DebugLog.shared.add("MUSIC", "queue set: \(songs.count) songs")
         diagnoseEnvironment()
     }
 
-    // MARK: - Search helper (needed by PartyHostController.loadDemoAndPlay)
-
-    /// Sucht pro Term genau 1 Song und gibt dessen Catalog-Song-ID als String zurück.
-    /// Beispiel-Term: "Daft Punk One More Time"
-    func searchCatalogSongIDs(for terms: [String]) async throws -> [String] {
-        var result: [String] = []
-        result.reserveCapacity(terms.count)
-
-        for term in terms {
-            DebugLog.shared.add("MUSIC", "search term='\(term)'")
-
-            var request = MusicCatalogSearchRequest(term: term, types: [Song.self])
-            request.limit = 1
-
-            let response = try await request.response()
-
-            guard let song = response.songs.first else {
-                DebugLog.shared.add("MUSIC", "no result for '\(term)'")
-                continue
-            }
-
-            // Song.id ist MusicItemID -> String extrahieren
-            let idString = song.id.rawValue
-
-            DebugLog.shared.add("MUSIC", "found '\(song.title)' – '\(song.artistName)' id=\(idString)")
-            result.append(idString)
+    /// Setzt das Artwork anhand der ersten Song-Artwork-URL (Fallback für initiale Anzeige im Public Tab)
+    private func updateArtwork(from songs: [Song]) {
+        guard let first = songs.first, let artwork = first.artwork else { return }
+        // Wähle eine mittlere Größe, damit es zügig lädt
+        if let url = artwork.url(width: 600, height: 600) {
+            self.currentArtworkURL = url
+            DebugLog.shared.add("MUSIC", "artwork preset from first song: \(url.absoluteString)")
         }
+    }
 
-        if result.isEmpty {
-            throw NSError(
-                domain: "HostPlaybackController",
-                code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "Keine Songs gefunden (Suche leer)."]
-            )
+    /// Bereitet den aktiven Player nach dem Setzen der Queue vor, damit der erste Eintrag korrekt als Now Playing initialisiert ist.
+    private func prepareActivePlayerToPlay() async throws {
+        if isRunningOnMac {
+            try await appPlayer.prepareToPlay()
+        } else {
+            try await systemPlayer.prepareToPlay()
         }
-
-        return result
+        diagnoseEnvironment(prefix: "MUSIC-PREPARE")
     }
 
     func diagnoseEnvironment(prefix: String = "MUSIC") {
@@ -139,7 +123,11 @@ final class HostPlaybackController: ObservableObject {
 
         let request = MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: ids)
         let response = try await request.response()
-        let songs = Array(response.items)
+
+        // Map fetched songs by ID and preserve the original order of requested IDs
+        let fetchedSongs = Array(response.items)
+        let songByID: [MusicItemID: Song] = Dictionary(uniqueKeysWithValues: fetchedSongs.map { ($0.id, $0) })
+        let songs = ids.compactMap { songByID[$0] }
 
         guard !songs.isEmpty else {
             throw NSError(domain: "HostPlaybackController", code: 1, userInfo: [
@@ -152,6 +140,8 @@ final class HostPlaybackController: ObservableObject {
         } else {
             systemPlayer.queue = MusicPlayer.Queue(for: songs)
         }
+        try await prepareActivePlayerToPlay()
+        updateArtwork(from: songs)
         DebugLog.shared.add("MUSIC", "queue set: \(songs.count) songs")
     }
 
@@ -218,3 +208,4 @@ final class HostPlaybackController: ObservableObject {
         tickTask = nil
     }
 }
+

@@ -19,6 +19,17 @@ struct ContentView: View {
 
     @State private var showScanner = false
 
+    @State private var adminCode: String? = nil
+    @State private var pendingAdminCodeSetup: Bool = false
+    @State private var adminCodeInput1: String = ""
+    @State private var adminCodeInput2: String = ""
+    @State private var hostTab: HostTab = .publicView
+    @State private var adminUnlocked: Bool = false
+    @State private var showAdminPrompt: Bool = false
+    @State private var adminPromptInput: String = ""
+    @State private var adminPromptDismissWorkItem: DispatchWorkItem? = nil
+    @State private var adminPromptShake: CGFloat = 0
+
     #if DEBUG
     @State private var showDebugOverlay = false
     #endif
@@ -40,49 +51,97 @@ struct ContentView: View {
         case guest
     }
 
+    enum HostTab {
+        case publicView, admin
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
-                Text("Party Player")
-                    .font(.largeTitle.bold())
-                #if DEBUG
-                    .onLongPressGesture(minimumDuration: 0.6) {
-                        showDebugOverlay.toggle()
-                    }
-                #endif
-
-                if !isRunningOnMac {
-                    TextField("Dein Name", text: $displayName)
-                        .textFieldStyle(.roundedBorder)
-                        .padding(.horizontal)
-                } else {
-                    // On Mac: no default name shown; host name will be taken from the HostView header or system name if needed.
-                }
-
-                if mode == nil {
-                    HStack {
-                        Button("Ich bin Host") { startHost() }
-                            .disabled(mode != nil)
-
-                        if !isRunningOnMac {
-                            Button("Ich bin Gast") { startGuest() }
-                                .disabled(mode != nil)
+                if hostHolder.host == nil && guestHolder.guest == nil {
+                    VStack(spacing: 16) {
+                        Text("Party Player").font(.largeTitle.bold())
+                        HStack {
+                            Button("Party anlegen") {
+                                pendingAdminCodeSetup = true
+                            }
+                            Button("Party beitreten") {
+                                if !isRunningOnMac {
+                                    if guestHolder.guest == nil { startGuest() }
+                                    showScanner = true
+                                }
+                            }
+                            .disabled(isRunningOnMac)
                         }
                     }
-                }
-
-                if let host = hostHolder.host {
-                    HostView(host: host)
-                }
-
-                if let guest = guestHolder.guest, !isRunningOnMac {
-                    GuestView(guest: guest, showScanner: $showScanner)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                } else {
+                    if let host = hostHolder.host {
+                        HostTabsView(
+                            host: host,
+                            hostTab: $hostTab,
+                            adminUnlocked: $adminUnlocked,
+                            showAdminPrompt: $showAdminPrompt,
+                            adminCode: $adminCode
+                        )
+                    }
+                    if let guest = guestHolder.guest, !isRunningOnMac {
+                        GuestView(guest: guest, showScanner: $showScanner)
+                    }
                 }
             }
             .sheet(isPresented: Binding(get: { !isRunningOnMac && showScanner }, set: { show in if !isRunningOnMac { showScanner = show } })) {
                 QRScannerView { code in
                     handleScannedCode(code)
                 }
+            }
+            .sheet(isPresented: $pendingAdminCodeSetup) {
+                AdminCodeSetupView(
+                    input1: $adminCodeInput1,
+                    input2: $adminCodeInput2,
+                    onConfirm: {
+                        adminCode = adminCodeInput1
+                        adminCodeInput1 = ""
+                        adminCodeInput2 = ""
+                        pendingAdminCodeSetup = false
+                        startHost()
+                    },
+                    onCancel: {
+                        adminCodeInput1 = ""
+                        adminCodeInput2 = ""
+                        pendingAdminCodeSetup = false
+                    }
+                )
+            }
+            .sheet(isPresented: $showAdminPrompt, onDismiss: {
+                adminPromptDismissWorkItem?.cancel()
+                adminPromptDismissWorkItem = nil
+                adminPromptInput = ""
+            }) {
+                AdminCodePromptView(
+                    codeInput: $adminPromptInput,
+                    shakeTrigger: $adminPromptShake,
+                    onAppear: {
+                        adminPromptDismissWorkItem?.cancel()
+                        let work = DispatchWorkItem { showAdminPrompt = false }
+                        adminPromptDismissWorkItem = work
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: work)
+                    },
+                    onSubmit: {
+                        guard let code = adminCode else { return }
+                        if adminPromptInput == code {
+                            adminUnlocked = true
+                            showAdminPrompt = false
+                            hostTab = .admin
+                        } else {
+                            adminPromptInput = ""
+                            adminPromptShake = 0
+                            withAnimation(.spring(response: 0.18, dampingFraction: 0.55)) {
+                                adminPromptShake += 1
+                            }
+                        }
+                    }
+                )
             }
             .onAppear {
                 locationService.requestWhenInUse()
@@ -110,7 +169,7 @@ struct ContentView: View {
     private func startHost() {
         mode = .host
         let host = PartyHostController(
-            hostName: displayName,
+            hostName: (isRunningOnMac ? "Host" : UIDevice.current.name),
             locationService: locationService
         )
         host.startHosting()
@@ -120,7 +179,7 @@ struct ContentView: View {
     private func startGuest() {
         mode = .guest
         let guest = PartyGuestController(
-            displayName: displayName,
+            displayName: (isRunningOnMac ? "Gast" : UIDevice.current.name),
             hasAppleMusic: false,
             locationService: locationService
         )
@@ -138,6 +197,19 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Shake Effect (Reusable)
+
+private struct ShakeEffect: GeometryEffect {
+    var amount: CGFloat = 12
+    var shakesPerUnit: CGFloat = 5
+    var animatableData: CGFloat
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        let translation = amount * sin(animatableData * .pi * shakesPerUnit)
+        return ProjectionTransform(CGAffineTransform(translationX: translation, y: 0))
+    }
+}
+
 // MARK: - Holders
 
 final class HostHolder: ObservableObject {
@@ -148,7 +220,545 @@ final class GuestHolder: ObservableObject {
     @Published var guest: PartyGuestController? = nil
 }
 
-// MARK: - HostView
+// MARK: - HostTabsView
+
+private struct HostTabsView: View {
+    @ObservedObject var host: PartyHostController
+    @Binding var hostTab: ContentView.HostTab
+    @Binding var adminUnlocked: Bool
+    @Binding var showAdminPrompt: Bool
+    @Binding var adminCode: String?
+
+    @State private var adminLockTimer: Timer? = nil
+    @State private var lastInteractionAt: Date = Date()
+
+    var badgeCount: Int {
+        host.pendingVoteOutcomes.count + host.pendingSkipRequests.count
+    }
+
+    var body: some View {
+        TabView(selection: $hostTab) {
+            publicTab
+                .tabItem { Label("Public", systemImage: "person.3") }
+                .tag(ContentView.HostTab.publicView)
+
+            adminTab
+                .tabItem { Label("Admin", systemImage: "gear") }
+                .badge(badgeCount)
+                .tag(ContentView.HostTab.admin)
+        }
+        .onChange(of: hostTab) { _, newValue in
+            if newValue == .admin {
+                if !adminUnlocked {
+                    hostTab = .publicView
+                    if adminCode != nil {
+                        showAdminPrompt = true
+                    }
+                } else {
+                    scheduleAutoLock()
+                }
+            }
+        }
+        .toolbar {
+            if hostTab == .admin && adminUnlocked {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        lockNow()
+                    } label: {
+                        Label("Sperren", systemImage: "lock.fill")
+                    }
+                }
+            }
+        }
+    }
+
+    private func scheduleAutoLock() {
+        adminLockTimer?.invalidate()
+        adminLockTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { _ in
+            adminUnlocked = false
+            hostTab = .publicView
+        }
+    }
+
+    private func registerInteraction() {
+        lastInteractionAt = Date()
+        scheduleAutoLock()
+    }
+
+    private func lockNow() {
+        adminLockTimer?.invalidate()
+        adminUnlocked = false
+        hostTab = .publicView
+    }
+
+    private var publicTab: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 16) {
+                    VStack(spacing: 8) {
+                        Text("Zum Mitmachen QR scannen")
+                            .font(.headline)
+                        QRCodeView(text: "PP|\(host.state.sessionID)|\(host.joinCode)")
+                    }
+
+                    Text("Gäste: \(host.state.members.count)")
+                        .font(.headline)
+
+                    HostNowPlayingBar(host: host)
+
+                    HostReadOnlyPlaylist(host: host)
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var adminTab: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 16) {
+                    Text("Gäste: \(host.state.members.count)")
+                        .font(.headline)
+
+                    HostNowPlayingBar(host: host)
+
+                    // Controls
+                    HStack(spacing: 12) {
+                        Button("Demo laden & Play") { host.loadDemoAndPlay() }
+                            .buttonStyle(.borderedProminent)
+                        Button("Play/Pause") { host.togglePlayPause() }
+                            .buttonStyle(.bordered)
+                        Button("Skip") { host.skip() }
+                            .buttonStyle(.bordered)
+                    }
+
+                    // Settings
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("Voting-Modus:").font(.headline)
+                            Picker("Modus", selection: $host.votingMode) {
+                                Text("Automatisch").tag(PartyHostController.VotingMode.automatic)
+                                Text("Host-Genehmigung").tag(PartyHostController.VotingMode.hostApproval)
+                            }
+                            .pickerStyle(.segmented)
+                        }
+
+                        HStack(spacing: 12) {
+                            Text("Cooldown (Minuten):")
+                            Stepper(value: $host.perItemCooldownMinutes, in: 0...120) {
+                                Text("\(host.perItemCooldownMinutes)")
+                            }
+                        }
+
+                        HStack(spacing: 12) {
+                            Text("Voting-Hürde (%):")
+                            Slider(value: Binding(
+                                get: { Double(host.voteThresholdPercent) },
+                                set: { host.voteThresholdPercent = Int($0.rounded()) }
+                            ), in: 0...100, step: 1)
+                            Text("\(host.voteThresholdPercent)%")
+                                .frame(width: 44, alignment: .trailing)
+                        }
+
+                        HStack(spacing: 12) {
+                            Text("Aktion-Slots:")
+                            Stepper(value: $host.maxConcurrentActions, in: 1...10) {
+                                Text("\(host.maxConcurrentActions)")
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    // Pending approvals and skip requests (reuse from HostView via new small views)
+                    HostPendingApprovalsPanel(host: host)
+                    HostSkipRequestsPanel(host: host)
+                    HostRemovedItemsPanel(host: host)
+
+                    // Admin playlist with remove option
+                    HostAdminPlaylist(host: host)
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .top)
+                .onTapGesture {
+                    registerInteraction()
+                }
+            }
+            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in
+                registerInteraction()
+            })
+            .onAppear {
+                scheduleAutoLock()
+            }
+            .onDisappear {
+                adminLockTimer?.invalidate()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct HostNowPlayingBar: View {
+    @ObservedObject var host: PartyHostController
+    var body: some View {
+        let np = host.nowPlaying
+        let currentID = host.state.nowPlayingItemID
+        let currentItem = host.state.queue.first(where: { $0.id == currentID }) ?? host.state.queue.first
+        let total = max(1, (currentItem?.durationSeconds ?? 240))
+        let rawPos = np?.positionSeconds ?? 0
+        let pos = min(max(0, rawPos), total)
+        let remaining = max(0, total - pos)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                HStack(spacing: 12) {
+                    HostArtworkView(urlString: currentItem?.artworkURL ?? host.publicArtworkURLString, size: 64)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Now Playing").font(.caption).foregroundStyle(.secondary)
+                        Text(currentItem?.title ?? "—").font(.headline).lineLimit(1)
+                        Text(currentItem?.artist ?? "").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(timeString(pos)).font(.system(.subheadline, design: .monospaced)).foregroundStyle(.secondary)
+                    Text("-\(timeString(remaining))").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                }
+            }
+            ProgressView(value: pos, total: total)
+        }
+        .padding(12)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+    private func timeString(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds.rounded(.down)))
+        let m = s / 60
+        let r = s % 60
+        return String(format: "%d:%02d", m, r)
+    }
+}
+
+private struct HostReadOnlyPlaylist: View {
+    @ObservedObject var host: PartyHostController
+    var body: some View {
+        List {
+            Section("Bevorstehend") {
+                ForEach(upcomingItems) { item in
+                    HostReadOnlyRow(item: item, isCurrent: host.state.nowPlayingItemID == item.id, nowPlayingPos: host.nowPlaying?.positionSeconds ?? 0)
+                }
+            }
+            Section("Bereits gespielt") {
+                ForEach(playedItems) { item in
+                    HostPlayedReadOnlyRow(item: item)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .frame(minHeight: 260)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+    private var upcomingItems: [QueueItem] {
+        guard let nowID = host.state.nowPlayingItemID,
+              let nowIdx = host.state.queue.firstIndex(where: { $0.id == nowID }) else {
+            return host.state.queue
+        }
+        let nextIndex = nowIdx + 1
+        guard host.state.queue.indices.contains(nextIndex) else { return [] }
+        return Array(host.state.queue[nextIndex...])
+    }
+    private var playedItems: [QueueItem] {
+        guard let nowID = host.state.nowPlayingItemID,
+              let nowIdx = host.state.queue.firstIndex(where: { $0.id == nowID }) else {
+            return []
+        }
+        return Array(host.state.queue[..<nowIdx])
+    }
+}
+
+private struct HostReadOnlyRow: View {
+    let item: QueueItem
+    let isCurrent: Bool
+    let nowPlayingPos: Double
+    var body: some View {
+        let total = max(1, item.durationSeconds ?? 240)
+        let pos = min(max(0, nowPlayingPos), total)
+        return HStack(spacing: 12) {
+            HostArtworkView(urlString: item.artworkURL, size: 52)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(item.title).font(.headline).lineLimit(1)
+                    if isCurrent {
+                        Text("▶︎").font(.caption2).foregroundColor(.accentColor)
+                            .padding(2).background(Color.accentColor.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                }
+                Text(item.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                ProgressView(value: isCurrent ? pos : 0, total: total)
+                HStack(spacing: 10) {
+                    Text("Up \(item.upVotes.count)")
+                    Text("Down \(item.downVotes.count)")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if isCurrent {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Image(systemName: "speaker.wave.2.fill")
+                    Text(timeString(pos)).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                }
+            } else {
+                Text(timeString(Double(total))).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 6)
+        .listRowBackground(isCurrent ? Color.primary.opacity(0.06) : Color.clear)
+    }
+    private func timeString(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds.rounded(.down)))
+        let m = s / 60
+        let r = s % 60
+        return String(format: "%d:%02d", m, r)
+    }
+}
+
+private struct HostPlayedReadOnlyRow: View {
+    let item: QueueItem
+    var body: some View {
+        HStack(spacing: 12) {
+            HostArtworkView(urlString: item.artworkURL, size: 44)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.title).font(.headline).lineLimit(1)
+                Text(item.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 10) { Text("Votes \(item.upVotes.count)") }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+}
+
+private struct HostPendingApprovalsPanel: View {
+    @ObservedObject var host: PartyHostController
+    var body: some View {
+        Group {
+            if host.votingMode == .hostApproval && !host.pendingVoteOutcomes.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Voting-Entscheidungen").font(.headline)
+                    ForEach(host.pendingVoteOutcomes) { outcome in
+                        let item = host.state.queue.first(where: { $0.id == outcome.itemID })
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item?.title ?? "Unbekannter Titel").font(.subheadline).lineLimit(1)
+                                Text(item?.artist ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text(label(for: outcome.kind)).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Ablehnen") { host.rejectVoteOutcome(id: outcome.id) }.buttonStyle(.bordered)
+                            Button("Genehmigen") { host.approveVoteOutcome(id: outcome.id) }.buttonStyle(.borderedProminent)
+                        }
+                        .padding(10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+    private func label(for kind: PartyHostController.PendingVoteOutcome.Kind) -> String {
+        switch kind {
+        case .promoteNext: return "Hinter Now Playing verschieben"
+        case .removeFromQueue: return "Aus Playlist entfernen"
+        case .sendToEnd: return "Ans Ende verschieben"
+        }
+    }
+}
+
+private struct HostSkipRequestsPanel: View {
+    @ObservedObject var host: PartyHostController
+    var body: some View {
+        Group {
+            if host.pendingSkipRequests.isEmpty { EmptyView() } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Skip-Anfragen").font(.headline)
+                    ForEach(host.pendingSkipRequests) { req in
+                        let item = host.state.queue.first(where: { $0.id == req.itemID })
+                        let requester = host.state.members.first(where: { $0.id == req.memberID })?.displayName ?? "Gast"
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item?.title ?? "Unbekannter Titel").font(.subheadline).lineLimit(1)
+                                Text(item?.artist ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text("\(requester)").font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Ablehnen") { host.rejectSkipRequest(itemID: req.itemID, memberID: req.memberID) }.buttonStyle(.bordered)
+                            Button("Skip freigeben") { host.approveSkipRequest(itemID: req.itemID) }.buttonStyle(.borderedProminent)
+                        }
+                        .padding(10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+}
+
+private struct HostRemovedItemsPanel: View {
+    @ObservedObject var host: PartyHostController
+    var body: some View {
+        Group {
+            if host.removedItems.isEmpty { EmptyView() } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Entfernte Titel").font(.headline)
+                    ForEach(host.removedItems) { item in
+                        HStack(spacing: 12) {
+                            HostArtworkView(urlString: item.artworkURL, size: 44)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title).font(.subheadline).lineLimit(1)
+                                Text(item.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer()
+                            Button("Ans Ende") { host.restoreRemovedToEnd(itemID: item.id) }.buttonStyle(.bordered)
+                        }
+                        .padding(10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+}
+
+private struct HostAdminPlaylist: View {
+    @ObservedObject var host: PartyHostController
+    var body: some View {
+        List {
+            Section("Bevorstehend") {
+                ForEach(upcomingItems) { item in
+                    HostAdminRow(host: host, item: item, isCurrent: host.state.nowPlayingItemID == item.id, nowPlayingPos: host.nowPlaying?.positionSeconds ?? 0)
+                }
+            }
+            Section("Bereits gespielt") {
+                ForEach(playedItems) { item in
+                    HostPlayedAdminRow(host: host, item: item)
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .frame(minHeight: 260)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+    private var upcomingItems: [QueueItem] {
+        guard let nowID = host.state.nowPlayingItemID,
+              let nowIdx = host.state.queue.firstIndex(where: { $0.id == nowID }) else {
+            return host.state.queue
+        }
+        let nextIndex = nowIdx + 1
+        guard host.state.queue.indices.contains(nextIndex) else { return [] }
+        return Array(host.state.queue[nextIndex...])
+    }
+    private var playedItems: [QueueItem] {
+        guard let nowID = host.state.nowPlayingItemID,
+              let nowIdx = host.state.queue.firstIndex(where: { $0.id == nowID }) else {
+            return []
+        }
+        return Array(host.state.queue[..<nowIdx])
+    }
+}
+
+private struct HostAdminRow: View {
+    @ObservedObject var host: PartyHostController
+    let item: QueueItem
+    let isCurrent: Bool
+    let nowPlayingPos: Double
+    var body: some View {
+        let total = max(1, item.durationSeconds ?? 240)
+        let pos = min(max(0, nowPlayingPos), total)
+        return HStack(spacing: 12) {
+            HostArtworkView(urlString: item.artworkURL, size: 44)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(item.title).font(.headline).lineLimit(1)
+                    if isCurrent {
+                        Text("▶︎").font(.caption2).foregroundColor(.accentColor)
+                            .padding(2).background(Color.accentColor.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                }
+                Text(item.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                ProgressView(value: isCurrent ? pos : 0, total: total)
+                HStack(spacing: 10) {
+                    Text("Up \(item.upVotes.count)")
+                    Text("Down \(item.downVotes.count)")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if !isCurrent {
+                Button("Entfernen") { host.adminRemoveFromQueue(itemID: item.id) }
+                    .buttonStyle(.bordered)
+            }
+        }
+        .padding(.vertical, 6)
+        .listRowBackground(isCurrent ? Color.primary.opacity(0.06) : Color.clear)
+    }
+}
+
+private struct HostPlayedAdminRow: View {
+    @ObservedObject var host: PartyHostController
+    let item: QueueItem
+    var body: some View {
+        HStack(spacing: 12) {
+            HostArtworkView(urlString: item.artworkURL, size: 44)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.title).font(.headline).lineLimit(1)
+                Text(item.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 10) { Text("Votes \(item.upVotes.count)") }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Ans Ende") { host.approveVoteOutcome(id: host.requestSendToEndApproval(itemID: item.id)) }
+                .buttonStyle(.bordered)
+        }
+    }
+}
+
+private struct HostArtworkView: View {
+    let urlString: String?
+    let size: CGFloat
+    var body: some View {
+        if let urlString, let url = URL(string: urlString) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image): image.resizable().scaledToFill()
+                default: placeholder
+                }
+            }
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        } else {
+            placeholder.frame(width: size, height: size).clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+    private var placeholder: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
+            Image(systemName: "music.note").foregroundStyle(.secondary)
+        }
+    }
+}
+
+// MARK: - HostView (original, kept for potential reuse)
 
 struct HostView: View {
     @ObservedObject var host: PartyHostController
@@ -594,6 +1204,219 @@ struct HostView: View {
     }
 }
 
+// MARK: - PIN Code Field (Reusable, dot style)
+
+private struct PinCodeField: View {
+    let title: String
+    @Binding var text: String
+    var focused: FocusState<Bool>.Binding? = nil
+    var length: Int = 4
+
+    @FocusState private var localFocus: Bool
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Text(title)
+                .font(.title3.bold())
+                .multilineTextAlignment(.center)
+
+            ZStack {
+                // Dots row
+                HStack(spacing: 24) {
+                    ForEach(0..<length, id: \.self) { idx in
+                        Circle()
+                            .strokeBorder(Color.primary, lineWidth: 1.5)
+                            .background(
+                                Circle().fill(idx < text.count ? Color.primary : Color.clear)
+                                    .opacity(idx < text.count ? 0.9 : 0)
+                            )
+                            .frame(width: 20, height: 20)
+                    }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture { focus(true) }
+
+                // Hidden text field to capture input
+                hiddenInput
+            }
+        }
+        .onChange(of: text) { _, newValue in
+            let filtered = newValue.filter { $0.isNumber }
+            if filtered != newValue { text = filtered }
+            if text.count > length { text = String(text.prefix(length)) }
+        }
+        .onAppear { focus(true) }
+    }
+
+    @ViewBuilder private var hiddenInput: some View {
+        #if os(iOS)
+        TextField("", text: Binding(
+            get: { text },
+            set: { newValue in
+                let filtered = newValue.filter { $0.isNumber }
+                text = String(filtered.prefix(length))
+            }
+        ))
+        .keyboardType(.numberPad)
+        .textContentType(.oneTimeCode)
+        .foregroundStyle(.clear)
+        .tint(.clear)
+        .accentColor(.clear)
+        .disableAutocorrection(true)
+        .frame(width: 1, height: 1)
+        .opacity(0.05)
+        .accessibilityHidden(true)
+        .focused(focused ?? $localFocus)
+        #else
+        SecureField("", text: Binding(
+            get: { text },
+            set: { newValue in
+                let filtered = newValue.filter { $0.isNumber }
+                text = String(filtered.prefix(length))
+            }
+        ))
+        .textFieldStyle(.plain)
+        .frame(width: 1, height: 1)
+        .opacity(0.05)
+        .accessibilityHidden(true)
+        .focused(focused ?? $localFocus)
+        #endif
+    }
+
+    private func focus(_ value: Bool) {
+        if let f = focused { f.wrappedValue = value } else { localFocus = value }
+    }
+}
+
+// MARK: - CodeField (Reusable)
+
+private struct CodeField: View {
+    let title: String
+    @Binding var text: String
+    var focused: FocusState<Bool>.Binding? = nil
+
+    @ViewBuilder var body: some View {
+        #if os(iOS)
+        let field = TextField(title, text: Binding(
+            get: { text },
+            set: { newValue in
+                let filtered = newValue.filter { $0.isNumber }
+                text = String(filtered.prefix(4))
+            }
+        ))
+        .keyboardType(.numberPad)
+        .textFieldStyle(.roundedBorder)
+        if let f = focused { field.focused(f) } else { field }
+        #else
+        SecureField(title, text: Binding(
+            get: { text },
+            set: { newValue in
+                let filtered = newValue.filter { $0.isNumber }
+                text = String(filtered.prefix(4))
+            }
+        ))
+        .textFieldStyle(.roundedBorder)
+        #endif
+    }
+}
+
+// MARK: - AdminCodeSetupView
+
+private struct AdminCodeSetupView: View {
+    @Binding var input1: String
+    @Binding var input2: String
+    var onConfirm: () -> Void
+    var onCancel: () -> Void
+
+    @FocusState private var focusCode1: Bool
+    @FocusState private var focusCode2: Bool
+    @State private var mismatch: Bool = false
+    @State private var shakeRepeat: CGFloat = 0
+
+    var body: some View {
+        VStack(spacing: 28) {
+            Text("Admin-Code festlegen")
+                .font(.title2.bold())
+            Text("Bitte 4-stelligen numerischen Code zweimal eingeben.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            PinCodeField(title: "Code eingeben", text: $input1, focused: $focusCode1)
+                .onChange(of: input1) { _, newValue in
+                    mismatch = false
+                    if newValue.count >= 4 { focusCode2 = true }
+                }
+
+            if input1.count == 4 {
+                VStack(spacing: 0) {
+                    PinCodeField(title: "Code wiederholen", text: $input2, focused: $focusCode2)
+                        .onChange(of: input2) { _, newValue in
+                            if newValue.count == 4 {
+                                if input1 == newValue {
+                                    onConfirm()
+                                } else {
+                                    mismatch = true
+                                    input2 = ""
+                                    focusCode2 = true
+                                    withAnimation(.spring(response: 0.18, dampingFraction: 0.55)) {
+                                        shakeRepeat += 1
+                                    }
+                                }
+                            }
+                        }
+                }
+                .modifier(ShakeEffect(animatableData: shakeRepeat))
+            }
+
+            HStack {
+                Button("Abbrechen", action: onCancel)
+                Spacer()
+                Button("Bestätigen") {
+                    guard input1.count == 4, input1 == input2 else { return }
+                    onConfirm()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!(input1.count == 4 && input1 == input2))
+            }
+        }
+        .padding()
+        .onAppear { focusCode1 = true }
+        .presentationDetents([.medium])
+    }
+}
+
+// MARK: - AdminCodePromptView
+
+private struct AdminCodePromptView: View {
+    @Binding var codeInput: String
+    @Binding var shakeTrigger: CGFloat
+    @FocusState private var focusCode: Bool
+    var onAppear: () -> Void
+    var onSubmit: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 16) {
+                Text("Admin-Code eingeben")
+                    .font(.title3.bold())
+                PinCodeField(title: "", text: $codeInput, focused: $focusCode)
+                    .onChange(of: codeInput) { _, newValue in
+                        if newValue.count == 4 { onSubmit() }
+                    }
+            }
+            .padding()
+        }
+        .modifier(ShakeEffect(animatableData: shakeTrigger))
+        .animation(.spring(response: 0.18, dampingFraction: 0.55), value: shakeTrigger)
+        .onAppear {
+            focusCode = true
+            onAppear()
+        }
+        .presentationDetents([.fraction(0.3)])
+    }
+}
+
 // MARK: - GuestView
 
 struct GuestView: View {
@@ -604,7 +1427,9 @@ struct GuestView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            Button("QR scannen & beitreten") { showScanner = true }
+            if guest.status != .admitted {
+                Button("QR scannen & beitreten") { showScanner = true }
+            }
 
             Text(statusText)
                 .font(.headline)
