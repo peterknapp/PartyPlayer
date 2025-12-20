@@ -232,6 +232,8 @@ private struct HostTabsView: View {
     @State private var adminLockTimer: Timer? = nil
     @State private var lastInteractionAt: Date = Date()
 
+    @State private var nowPlayingRenderKey = UUID()
+
     var badgeCount: Int {
         host.pendingVoteOutcomes.count + host.pendingSkipRequests.count
     }
@@ -248,6 +250,7 @@ private struct HostTabsView: View {
                 .tag(ContentView.HostTab.admin)
         }
         .onChange(of: hostTab) { _, newValue in
+            nowPlayingRenderKey = UUID()
             if newValue == .admin {
                 if !adminUnlocked {
                     hostTab = .publicView
@@ -293,26 +296,64 @@ private struct HostTabsView: View {
 
     private var publicTab: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(spacing: 16) {
-                    VStack(spacing: 8) {
-                        Text("Zum Mitmachen QR scannen")
-                            .font(.headline)
-                        QRCodeView(text: "PP|\(host.state.sessionID)|\(host.joinCode)")
-                    }
-
-                    Text("Gäste: \(host.state.members.count)")
+            VStack(spacing: 16) {
+                VStack(spacing: 8) {
+                    Text("Zum Mitmachen QR scannen")
                         .font(.headline)
-
-                    HostNowPlayingBar(host: host)
-
-                    HostReadOnlyPlaylist(host: host)
+                    QRCodeView(text: "PP|\(host.state.sessionID)|\(host.joinCode)")
                 }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .top)
+
+                Text("Gäste: \(host.state.members.count)")
+                    .font(.headline)
+
+                VStack(spacing: 0) {
+                    List {
+                        Section("Playlist") {
+                            if let currentItem = currentItem {
+                                HostReadOnlyRow(item: currentItem, isCurrent: true, progress: host.nowPlaying?.positionSeconds ?? 0)
+                            }
+                            ForEach(upcomingItems) { item in
+                                HostReadOnlyRow(item: item, isCurrent: false, progress: 0)
+                            }
+                        }
+                        Section("Bereits gespielt") {
+                            ForEach(playedItems) { item in
+                                HostPlayedReadOnlyRow(item: item)
+                            }
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                    .frame(minHeight: 260)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                }
             }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var currentItem: QueueItem? {
+        guard let nowID = host.state.nowPlayingItemID else { return nil }
+        return host.state.queue.first(where: { $0.id == nowID })
+    }
+
+    private var upcomingItems: [QueueItem] {
+        guard let currentID = host.state.nowPlayingItemID,
+              let nowIdx = host.state.queue.firstIndex(where: { $0.id == currentID }) else {
+            return host.state.queue
+        }
+        let nextIndex = nowIdx + 1
+        guard host.state.queue.indices.contains(nextIndex) else { return [] }
+        return Array(host.state.queue[nextIndex...])
+    }
+
+    private var playedItems: [QueueItem] {
+        guard let nowID = host.state.nowPlayingItemID,
+              let nowIdx = host.state.queue.firstIndex(where: { $0.id == nowID }) else {
+            return []
+        }
+        return Array(host.state.queue[..<nowIdx])
     }
 
     private var adminTab: some View {
@@ -322,7 +363,8 @@ private struct HostTabsView: View {
                     Text("Gäste: \(host.state.members.count)")
                         .font(.headline)
 
-                    HostNowPlayingBar(host: host)
+                    HostNowPlayingPanel(host: host)
+                        .id(nowPlayingRenderKey)
 
                     // Controls
                     HStack(spacing: 12) {
@@ -399,37 +441,68 @@ private struct HostTabsView: View {
     }
 }
 
-private struct HostNowPlayingBar: View {
+private struct HostNowPlayingPanel: View {
     @ObservedObject var host: PartyHostController
+    
     var body: some View {
-        let np = host.nowPlaying
-        let currentID = host.state.nowPlayingItemID
-        let currentItem = host.state.queue.first(where: { $0.id == currentID }) ?? host.state.queue.first
-        let total = max(1, (currentItem?.durationSeconds ?? 240))
-        let rawPos = np?.positionSeconds ?? 0
-        let pos = min(max(0, rawPos), total)
-        let remaining = max(0, total - pos)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                HStack(spacing: 12) {
-                    HostArtworkView(urlString: currentItem?.artworkURL ?? host.publicArtworkURLString, size: 64)
-                    VStack(alignment: .leading, spacing: 2) {
+        Group {
+            if let currentID = host.state.nowPlayingItemID,
+               let item = host.state.queue.first(where: { $0.id == currentID }) {
+                HStack(spacing: 16) {
+                    HostArtworkView(urlString: item.artworkURL, size: 64)
+                    VStack(alignment: .leading, spacing: 4) {
                         Text("Now Playing").font(.caption).foregroundStyle(.secondary)
-                        Text(currentItem?.title ?? "—").font(.headline).lineLimit(1)
-                        Text(currentItem?.artist ?? "").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        Text(item.title).font(.headline).lineLimit(1)
+                        Text(item.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        ProgressView(value: elapsed, total: total)
+                        HStack {
+                            Text(timeString(elapsed))
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("-" + timeString(remaining))
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(timeString(pos)).font(.system(.subheadline, design: .monospaced)).foregroundStyle(.secondary)
-                    Text("-\(timeString(remaining))").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                .padding(12)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            } else {
+                HStack(spacing: 16) {
+                    HostArtworkView(urlString: nil, size: 64)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Now Playing").font(.caption).foregroundStyle(.secondary)
+                        Text("—").font(.headline)
+                        Text("").font(.subheadline).foregroundStyle(.secondary)
+                        ProgressView(value: 0, total: 1)
+                        HStack {
+                            Text("0:00").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                            Spacer()
+                            Text("-0:00").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                        }
+                    }
                 }
+                .padding(12)
+                .background(.ultraThinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
             }
-            ProgressView(value: pos, total: total)
         }
-        .padding(12)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+    
+    private var elapsed: Double {
+        host.nowPlaying?.positionSeconds ?? 0
+    }
+    private var total: Double {
+        guard let currentID = host.state.nowPlayingItemID,
+              let item = host.state.queue.first(where: { $0.id == currentID }) else {
+            return 1
+        }
+        return item.durationSeconds ?? 240
+    }
+    private var remaining: Double {
+        max(0, total - elapsed)
     }
     private func timeString(_ seconds: Double) -> String {
         let s = max(0, Int(seconds.rounded(.down)))
@@ -443,9 +516,11 @@ private struct HostReadOnlyPlaylist: View {
     @ObservedObject var host: PartyHostController
     var body: some View {
         List {
-            Section("Bevorstehend") {
+            Section("Playlist") {
                 ForEach(upcomingItems) { item in
-                    HostReadOnlyRow(item: item, isCurrent: host.state.nowPlayingItemID == item.id, nowPlayingPos: host.nowPlaying?.positionSeconds ?? 0)
+                    // Simple list row, no highlighting or progress
+                    Text("\(item.title) – \(item.artist)")
+                        .lineLimit(1)
                 }
             }
             Section("Bereits gespielt") {
@@ -476,54 +551,6 @@ private struct HostReadOnlyPlaylist: View {
     }
 }
 
-private struct HostReadOnlyRow: View {
-    let item: QueueItem
-    let isCurrent: Bool
-    let nowPlayingPos: Double
-    var body: some View {
-        let total = max(1, item.durationSeconds ?? 240)
-        let pos = min(max(0, nowPlayingPos), total)
-        return HStack(spacing: 12) {
-            HostArtworkView(urlString: item.artworkURL, size: 52)
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(item.title).font(.headline).lineLimit(1)
-                    if isCurrent {
-                        Text("▶︎").font(.caption2).foregroundColor(.accentColor)
-                            .padding(2).background(Color.accentColor.opacity(0.1))
-                            .clipShape(RoundedRectangle(cornerRadius: 4))
-                    }
-                }
-                Text(item.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                ProgressView(value: isCurrent ? pos : 0, total: total)
-                HStack(spacing: 10) {
-                    Text("Up \(item.upVotes.count)")
-                    Text("Down \(item.downVotes.count)")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if isCurrent {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Image(systemName: "speaker.wave.2.fill")
-                    Text(timeString(pos)).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-                }
-            } else {
-                Text(timeString(Double(total))).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 6)
-        .listRowBackground(isCurrent ? Color.primary.opacity(0.06) : Color.clear)
-    }
-    private func timeString(_ seconds: Double) -> String {
-        let s = max(0, Int(seconds.rounded(.down)))
-        let m = s / 60
-        let r = s % 60
-        return String(format: "%d:%02d", m, r)
-    }
-}
-
 private struct HostPlayedReadOnlyRow: View {
     let item: QueueItem
     var body: some View {
@@ -538,6 +565,58 @@ private struct HostPlayedReadOnlyRow: View {
             }
             Spacer()
         }
+    }
+}
+
+private struct HostReadOnlyRow: View {
+    let item: QueueItem
+    let isCurrent: Bool
+    let progress: Double
+
+    var body: some View {
+        let total = max(1, item.durationSeconds ?? 240)
+        let progressValue: Double = isCurrent ? progress : 0
+        let remaining = max(0, total - progressValue)
+        HStack(spacing: 12) {
+            HostArtworkView(urlString: item.artworkURL, size: 44)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(item.title).font(.headline).lineLimit(1)
+                    if isCurrent {
+                        Text("▶︎").font(.caption2).foregroundColor(.accentColor)
+                            .padding(2).background(Color.accentColor.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
+                }
+                Text(item.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                ProgressView(value: progressValue, total: total)
+                    .tint(.secondary)
+                if isCurrent {
+                    HStack {
+                        Text(timeString(progressValue))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("-" + timeString(remaining))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(timeString(total))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func timeString(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds.rounded(.down)))
+        let m = s / 60
+        let r = s % 60
+        return String(format: "%d:%02d", m, r)
     }
 }
 
@@ -737,13 +816,18 @@ private struct HostArtworkView: View {
     let urlString: String?
     let size: CGFloat
     var body: some View {
-        if let urlString, let url = URL(string: urlString) {
+        let effectiveURLString: String? = {
+            guard let s = urlString?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+            return s
+        }()
+        if let urlString = effectiveURLString, let url = URL(string: urlString) {
             AsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image): image.resizable().scaledToFill()
                 default: placeholder
                 }
             }
+            .id(effectiveURLString)
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: 8))
         } else {
@@ -970,22 +1054,23 @@ struct HostView: View {
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 HStack(spacing: 12) {
-                    ArtworkView(urlString: currentItem?.artworkURL, size: 46)
+                    let resolvedArt = currentItem?.artworkURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ArtworkView(urlString: resolvedArt, size: 46)
+                }
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Now Playing")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Now Playing")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
-                        Text(currentItem?.title ?? "—")
-                            .font(.headline)
-                            .lineLimit(1)
+                    Text(currentItem?.title ?? "—")
+                        .font(.headline)
+                        .lineLimit(1)
 
-                        Text(currentItem?.artist ?? "")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+                    Text(currentItem?.artist ?? "")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
 
                 Spacer()

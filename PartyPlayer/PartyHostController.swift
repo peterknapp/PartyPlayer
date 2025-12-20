@@ -17,9 +17,6 @@ final class PartyHostController: ObservableObject {
     @Published var processSendToEndOutcomes: Bool = true
     @Published private(set) var removedItems: [QueueItem] = []
 
-    // Fallback-Artwork für Public-Tab (z. B. beim ersten Start, bevor NowPlaying-IDs stabil sind)
-    @Published var publicArtworkURLString: String? = nil
-
     private let mpc: MPCService
     // Concurrent action slots per member (e.g., 3). Each spent when a vote is accepted and restored when the per-item cooldown elapses.
     @Published var maxConcurrentActions: Int = 3
@@ -207,18 +204,29 @@ final class PartyHostController: ObservableObject {
                     )
                 }
 
-                // Set initial state and public artwork fallback for Public tab
-                self.publicArtworkURLString = items.first?.artworkURL
+                // Set initial state
                 state.queue = items
                 state.nowPlayingItemID = items.first?.id
 
+                let payload = PartyMessage.NowPlayingPayload(
+                    nowPlayingItemID: state.nowPlayingItemID,
+                    title: items.first?.title,
+                    artist: items.first?.artist,
+                    isPlaying: false,
+                    positionSeconds: 0,
+                    sentAt: Date()
+                )
+                self.nowPlaying = payload
+                
                 try await playback.setQueue(withSongs: songs)
 
-                broadcastSnapshot()
                 if !isNowPlayingBroadcasting { startNowPlayingBroadcast() }
                 try await playback.play()
 
                 DebugLog.shared.add("HOST", "demo queue loaded + playing")
+
+                // Ensure current state is synchronized to guests after demo load
+                broadcastSnapshot()
             } catch {
                 DebugLog.shared.add("HOST", "demo failed: \(error.localizedDescription)")
                 DebugLog.shared.add("MUSIC", "post-failure authStatus=\(MusicAuthorization.currentStatus)")
@@ -251,10 +259,6 @@ final class PartyHostController: ObservableObject {
                     state.nowPlayingItemID = state.queue.indices.contains(nextIndex)
                         ? state.queue[nextIndex].id
                         : state.queue.last?.id
-                }
-                if let nowID = self.state.nowPlayingItemID,
-                   let nowItem = self.state.queue.first(where: { $0.id == nowID }) {
-                    self.publicArtworkURLString = nowItem.artworkURL
                 }
                 broadcastSnapshot()
             } catch {
@@ -475,15 +479,6 @@ final class PartyHostController: ObservableObject {
             broadcastSnapshot()
             return
         }
-
-        // REMOVE THIS block which spent slot globally after cooldown, before isCurrent/isNext/played:
-        /*
-        guard trySpendSlot(for: vote.memberID) else {
-            DebugLog.shared.add("HOST", "vote ignored (no action slots) member=\(vote.memberID)")
-            return
-        }
-        broadcastSnapshot()
-        */
 
         guard perItemLimiter.spend(memberID: vote.memberID, itemID: vote.itemID) else {
             var remaining: String = "?"
@@ -872,10 +867,6 @@ final class PartyHostController: ObservableObject {
                             : self.state.queue.last?.id
                     }
                     self.state.queue.removeAll { $0.id == itemID }
-                    if let nowID = self.state.nowPlayingItemID,
-                       let nowItem = self.state.queue.first(where: { $0.id == nowID }) {
-                        self.publicArtworkURLString = nowItem.artworkURL
-                    }
                     self.broadcastSnapshot()
                 } catch {
                     DebugLog.shared.add("HOST", "approveSkipRequest failed: \(error.localizedDescription)")
