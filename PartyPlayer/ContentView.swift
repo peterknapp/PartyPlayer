@@ -302,41 +302,47 @@ private struct HostTabsView: View {
 
     private var publicTab: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 16) {
-                VStack(spacing: 8) {
-                    Text("Zum Mitmachen QR scannen")
+            // Header and counters in a scrolling container, like admin
+            ScrollView {
+                VStack(spacing: 16) {
+                    VStack(spacing: 8) {
+                        Text("Zum Mitmachen QR scannen")
+                            .font(.headline)
+                        QRCodeView(text: "PP|\(host.state.sessionID)|\(host.joinCode)")
+                    }
+
+                    Text("Gäste: \(host.state.members.count)")
                         .font(.headline)
-                    QRCodeView(text: "PP|\(host.state.sessionID)|\(host.joinCode)")
                 }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
 
-                Text("Gäste: \(host.state.members.count)")
-                    .font(.headline)
-
-                VStack(spacing: 0) {
-                    if !host.state.queue.isEmpty {
-                        List {
-                            Section("Playlist") {
-                                if let currentItem = currentItem {
-                                    HostReadOnlyRow(item: currentItem, isCurrent: true, progress: host.nowPlaying?.positionSeconds ?? 0)
-                                }
-                                ForEach(upcomingItems) { item in
-                                    HostReadOnlyRow(item: item, isCurrent: false, progress: 0)
-                                }
+            // Playlist takes the remaining space, like admin's HostAdminPlaylist
+            Group {
+                if !host.state.queue.isEmpty {
+                    List {
+                        Section("Playlist") {
+                            if let currentItem = currentItem {
+                                HostReadOnlyRow(item: currentItem, isCurrent: true, progress: host.nowPlaying?.positionSeconds ?? 0)
                             }
-                            Section("Bereits gespielt") {
-                                ForEach(playedItems) { item in
-                                    HostPlayedReadOnlyRow(item: item)
-                                }
+                            ForEach(upcomingItems) { item in
+                                HostReadOnlyRow(item: item, isCurrent: false, progress: 0)
                             }
                         }
-                        .listStyle(.insetGrouped)
-                        .frame(minHeight: 260)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        Section("Bereits gespielt") {
+                            ForEach(playedItems) { item in
+                                HostPlayedReadOnlyRow(item: item)
+                            }
+                        }
                     }
+                    .scrollContentBackground(.hidden)
+                    .background(Color(.systemBackground))
+                    .listStyle(.insetGrouped)
+                    .frame(minHeight: 260)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
             }
-            .padding()
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -371,17 +377,27 @@ private struct HostTabsView: View {
                     Text("Gäste: \(host.state.members.count)")
                         .font(.headline)
 
-                    HostNowPlayingPanel(host: host)
-                        .id(nowPlayingRenderKey)
+                    // REMOVED:
+                    // HostNowPlayingPanel(host: host)
+                    //     .id(nowPlayingRenderKey)
 
                     // Controls
                     HStack(spacing: 12) {
-                        Button("Demo laden & Play") { host.loadDemoAndPlay() }
-                            .buttonStyle(.borderedProminent)
-                        Button("Play/Pause") { host.togglePlayPause() }
-                            .buttonStyle(.bordered)
-                        Button("Skip") { host.skip() }
-                            .buttonStyle(.bordered)
+                        Button("Demo laden & Play") {
+                            registerInteraction()
+                            host.loadDemoAndPlay()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button("Play/Pause") {
+                            registerInteraction()
+                            host.togglePlayPause()
+                        }
+                        .buttonStyle(.bordered)
+                        Button("Skip") {
+                            registerInteraction()
+                            host.skip()
+                        }
+                        .buttonStyle(.bordered)
                     }
 
                     // Settings
@@ -404,12 +420,10 @@ private struct HostTabsView: View {
 
                         HStack(spacing: 12) {
                             Text("Voting-Hürde (%):")
-                            Slider(value: Binding(
-                                get: { Double(host.voteThresholdPercent) },
-                                set: { host.voteThresholdPercent = Int($0.rounded()) }
-                            ), in: 0...100, step: 1)
-                            Text("\(host.voteThresholdPercent)%")
-                                .frame(width: 44, alignment: .trailing)
+                            Stepper(value: $host.voteThresholdPercent, in: 0...100) {
+                                Text("\(host.voteThresholdPercent)%")
+                                    .frame(width: 44, alignment: .trailing)
+                            }
                         }
 
                         HStack(spacing: 12) {
@@ -419,6 +433,10 @@ private struct HostTabsView: View {
                             }
                         }
                     }
+                    .onChange(of: host.votingMode) { _, _ in registerInteraction() }
+                    .onChange(of: host.perItemCooldownMinutes) { _, _ in registerInteraction() }
+                    .onChange(of: host.voteThresholdPercent) { _, _ in registerInteraction() }
+                    .onChange(of: host.maxConcurrentActions) { _, _ in registerInteraction() }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     // Pending approvals and skip requests (reuse from HostView via new small views)
@@ -427,7 +445,8 @@ private struct HostTabsView: View {
                     HostRemovedItemsPanel(host: host)
 
                     // Admin playlist with remove option
-                    HostAdminPlaylist(host: host)
+                    // HostAdminPlaylist(host: host)  <-- THIS LINE REMOVED
+
                 }
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .top)
@@ -435,15 +454,15 @@ private struct HostTabsView: View {
                     registerInteraction()
                 }
             }
-            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in
-                registerInteraction()
-            })
             .onAppear {
                 scheduleAutoLock()
             }
             .onDisappear {
                 adminLockTimer?.invalidate()
             }
+
+            HostAdminPlaylist(host: host)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -751,8 +770,8 @@ private struct HostAdminPlaylist: View {
     @ObservedObject var host: PartyHostController
     var body: some View {
         List {
-            Section("Bevorstehend") {
-                ForEach(upcomingItems) { item in
+            Section("Playlist") {
+                ForEach(playlistItems) { item in
                     HostAdminRow(host: host, item: item, isCurrent: host.state.nowPlayingItemID == item.id, nowPlayingPos: host.nowPlaying?.positionSeconds ?? 0)
                 }
             }
@@ -762,9 +781,18 @@ private struct HostAdminPlaylist: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Color(.systemBackground))
         .listStyle(.insetGrouped)
         .frame(minHeight: 260)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+    private var playlistItems: [QueueItem] {
+        if let nowID = host.state.nowPlayingItemID,
+           let nowIdx = host.state.queue.firstIndex(where: { $0.id == nowID }) {
+            return Array(host.state.queue[nowIdx...])
+        }
+        return host.state.queue
     }
     private var upcomingItems: [QueueItem] {
         guard let nowID = host.state.nowPlayingItemID,
@@ -805,12 +833,20 @@ private struct HostAdminRow: View {
                 }
                 Text(item.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 ProgressView(value: isCurrent ? pos : 0, total: total)
-                HStack(spacing: 10) {
-                    Text("Up \(item.upVotes.count)")
-                    Text("Down \(item.downVotes.count)")
+                
+                if isCurrent {
+                    HStack {
+                        Text(timeString(pos))
+                        Spacer()
+                        Text("-" + timeString(max(0, total - pos)))
+                    }
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                } else {
+                    Text(timeString(total))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
             Spacer()
             if !isCurrent {
@@ -820,6 +856,13 @@ private struct HostAdminRow: View {
         }
         .padding(.vertical, 6)
         .listRowBackground(isCurrent ? Color.primary.opacity(0.06) : Color.clear)
+    }
+    
+    private func timeString(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds.rounded(.down)))
+        let m = s / 60
+        let r = s % 60
+        return String(format: "%d:%02d", m, r)
     }
 }
 
@@ -840,6 +883,7 @@ private struct HostPlayedAdminRow: View {
             Button("Ans Ende") { host.approveVoteOutcome(id: host.requestSendToEndApproval(itemID: item.id)) }
                 .buttonStyle(.bordered)
         }
+        .listRowBackground(Color.clear)
     }
 }
 
@@ -1975,5 +2019,4 @@ private struct ArtworkThumbView: View {
         }
     }
 }
-
 
