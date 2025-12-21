@@ -105,6 +105,8 @@ struct ContentView: View {
                         adminCodeInput2 = ""
                         pendingAdminCodeSetup = false
                         startHost()
+                        adminUnlocked = true
+                        hostTab = .admin
                     },
                     onCancel: {
                         adminCodeInput1 = ""
@@ -249,7 +251,7 @@ private struct HostTabsView: View {
                 .badge(badgeCount)
                 .tag(ContentView.HostTab.admin)
         }
-        .onChange(of: hostTab) { _, newValue in
+        .onChange(of: hostTab) { oldValue, newValue in
             nowPlayingRenderKey = UUID()
             if newValue == .admin {
                 if !adminUnlocked {
@@ -260,6 +262,10 @@ private struct HostTabsView: View {
                 } else {
                     scheduleAutoLock()
                 }
+            } else if oldValue == .admin && newValue == .publicView {
+                // Manual switch away from Admin: lock immediately
+                adminLockTimer?.invalidate()
+                adminUnlocked = false
             }
         }
         .toolbar {
@@ -307,24 +313,26 @@ private struct HostTabsView: View {
                     .font(.headline)
 
                 VStack(spacing: 0) {
-                    List {
-                        Section("Playlist") {
-                            if let currentItem = currentItem {
-                                HostReadOnlyRow(item: currentItem, isCurrent: true, progress: host.nowPlaying?.positionSeconds ?? 0)
+                    if !host.state.queue.isEmpty {
+                        List {
+                            Section("Playlist") {
+                                if let currentItem = currentItem {
+                                    HostReadOnlyRow(item: currentItem, isCurrent: true, progress: host.nowPlaying?.positionSeconds ?? 0)
+                                }
+                                ForEach(upcomingItems) { item in
+                                    HostReadOnlyRow(item: item, isCurrent: false, progress: 0)
+                                }
                             }
-                            ForEach(upcomingItems) { item in
-                                HostReadOnlyRow(item: item, isCurrent: false, progress: 0)
+                            Section("Bereits gespielt") {
+                                ForEach(playedItems) { item in
+                                    HostPlayedReadOnlyRow(item: item)
+                                }
                             }
                         }
-                        Section("Bereits gespielt") {
-                            ForEach(playedItems) { item in
-                                HostPlayedReadOnlyRow(item: item)
-                            }
-                        }
+                        .listStyle(.insetGrouped)
+                        .frame(minHeight: 260)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     }
-                    .listStyle(.insetGrouped)
-                    .frame(minHeight: 260)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
             }
             .padding()
@@ -1455,12 +1463,9 @@ private struct AdminCodeSetupView: View {
             }
 
             HStack {
+                Spacer()
                 Button("Abbrechen", action: onCancel)
                 Spacer()
-                Button("Bestätigen") {
-                    guard input1.count == 4, input1 == input2 else { return }
-                    onConfirm()
-                }
                 .buttonStyle(.borderedProminent)
                 .disabled(!(input1.count == 4 && input1 == input2))
             }
