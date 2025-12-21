@@ -562,17 +562,32 @@ private struct HostReadOnlyPlaylist: View {
 private struct HostPlayedReadOnlyRow: View {
     let item: QueueItem
     var body: some View {
+        let total = max(1, item.durationSeconds ?? 240)
         HStack(spacing: 12) {
             HostArtworkView(urlString: item.artworkURL, size: 44)
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.title).font(.headline).lineLimit(1)
                 Text(item.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                HStack(spacing: 10) { Text("Votes \(item.upVotes.count)") }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Text("Up \(item.upVotes.count)")
+                    Text("Down \(item.downVotes.count)")
+                    Spacer()
+                    Text(timeString(total))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Spacer()
         }
+    }
+    
+    private func timeString(_ seconds: Double) -> String {
+        let s = max(0, Int(seconds.rounded(.down)))
+        let m = s / 60
+        let r = s % 60
+        return String(format: "%d:%02d", m, r)
     }
 }
 
@@ -599,20 +614,28 @@ private struct HostReadOnlyRow: View {
                 Text(item.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 ProgressView(value: progressValue, total: total)
                     .tint(.secondary)
-                if isCurrent {
-                    HStack {
-                        Text(timeString(progressValue))
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Text("-" + timeString(remaining))
+                HStack {
+                    HStack(spacing: 10) {
+                        Text("Up \(item.upVotes.count)")
+                        Text("Down \(item.downVotes.count)")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    if isCurrent {
+                        HStack(spacing: 8) {
+                            Text(timeString(progressValue))
+                            Text("-" + timeString(remaining))
+                        }
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Text(timeString(total))
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
-                } else {
-                    Text(timeString(total))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
                 }
             }
             Spacer()
@@ -1952,4 +1975,5 @@ private struct ArtworkThumbView: View {
         }
     }
 }
+
 
