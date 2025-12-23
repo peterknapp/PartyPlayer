@@ -43,6 +43,10 @@ final class PartyHostController: ObservableObject {
 
     private var nowPlayingBroadcastTask: Task<Void, Never>?
     private var isNowPlayingBroadcasting = false
+    private var lastPlaybackPosition: Double? = nil
+    private var lastManualSkipAt: Date? = nil
+    private var lastAutoSkipAt: Date? = nil
+    private var blockedSongCounts: [String: Int] = [:]
 
     private var peerToMember: [MCPeerID: MemberID] = [:]
     private let hostMemberID: MemberID = DeviceIdentity.memberID()
@@ -133,6 +137,7 @@ final class PartyHostController: ObservableObject {
     }
 
     func approveSkip(itemID: UUID) {
+        DebugLog.shared.add("HOST-SKIP", "approveSkip remove itemID=\(itemID)")
         state.queue.removeAll { $0.id == itemID }
         broadcastSnapshot()
     }
@@ -142,11 +147,66 @@ final class PartyHostController: ObservableObject {
         if isNowPlayingBroadcasting { return }
         isNowPlayingBroadcasting = true
 
-        playback.startTick(every: 1.0) { [weak self] playing, pos in
+        playback.startTick(every: 1.0) { [weak self] playing, pos, currentSongID in
             guard let self else { return }
             // Respect cancellation
             guard self.isNowPlayingBroadcasting else { return }
             Task { @MainActor in
+
+                // 1) Primary: Map currentSongID from the player to our queue and update nowPlayingItemID
+                if let currentSongID {
+                    // If this song was explicitly removed earlier (even if duplicates exist), skip it
+                    if let count = self.blockedSongCounts[currentSongID], count > 0 {
+                        DebugLog.shared.add("HOST-TICK", "blocked songID=\(currentSongID) count=\(count) -> autoSkip")
+                        let shouldSkip = (self.lastAutoSkipAt.map { Date().timeIntervalSince($0) > 0.8 } ?? true)
+                        if shouldSkip {
+                            self.blockedSongCounts[currentSongID] = max(0, count - 1)
+                            self.lastAutoSkipAt = Date()
+                            Task { [weak self] in
+                                try? await self?.playback.skipToNext()
+                            }
+                        }
+                    } else if let idx = self.state.queue.firstIndex(where: { $0.songID == currentSongID }) {
+                        DebugLog.shared.add("HOST-TICK", "map songID=\(currentSongID) -> itemID=\(self.state.queue[idx].id) idx=\(idx)")
+                        let currentItemID = self.state.queue[idx].id
+                        if self.state.nowPlayingItemID != currentItemID {
+                            self.state.nowPlayingItemID = currentItemID
+                            self.broadcastSnapshot()
+                        }
+                    } else {
+                        // Current song is no longer present in logical queue -> auto-skip to next
+                        DebugLog.shared.add("HOST-TICK", "songID not in queue -> autoSkip songID=\(currentSongID)")
+                        let shouldSkip = (self.lastAutoSkipAt.map { Date().timeIntervalSince($0) > 0.8 } ?? true)
+                        if shouldSkip {
+                            self.lastAutoSkipAt = Date()
+                            Task { [weak self] in
+                                try? await self?.playback.skipToNext()
+                            }
+                        }
+                    }
+                } else {
+                    // 2) Fallback detection only if no recent manual skip
+                    let recentlyManuallySkipped = (self.lastManualSkipAt.map { Date().timeIntervalSince($0) < 1.0 } ?? false)
+                    if recentlyManuallySkipped { DebugLog.shared.add("HOST-TICK", "fallback suppressed due to recent manual skip") }
+                    if !recentlyManuallySkipped {
+                        if let last = self.lastPlaybackPosition, pos < last - 3.0 {
+                            DebugLog.shared.add("HOST-TICK", String(format: "fallback posDrop last=%.2f -> pos=%.2f", last, pos))
+                            if let currentNowID = self.state.nowPlayingItemID,
+                               let nowIdx = self.state.queue.firstIndex(where: { $0.id == currentNowID }) {
+                                let nextIndex = nowIdx + 1
+                                if self.state.queue.indices.contains(nextIndex) {
+                                    self.state.nowPlayingItemID = self.state.queue[nextIndex].id
+                                    self.broadcastSnapshot()
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Remember last observed position for fallback detection
+                self.lastPlaybackPosition = pos
+
+                // Always send NowPlaying payload (keeps progress in sync)
                 let payload = PartyMessage.NowPlayingPayload(
                     nowPlayingItemID: self.state.nowPlayingItemID,
                     isPlaying: playing,
@@ -177,6 +237,7 @@ final class PartyHostController: ObservableObject {
             }
             do {
                 let terms = [
+                    "Napalm Death You Suffer",
                     "Daft Punk One More Time",
                     "The Weeknd Blinding Lights",
                     "Ed Sheeran Shape of You",
@@ -252,14 +313,22 @@ final class PartyHostController: ObservableObject {
     func skip() {
         Task {
             do {
+                DebugLog.shared.add("HOST", "manual skip button pressed")
                 try await playback.skipToNext()
+                // Update state based on queue order to ensure UI advances even if player songID isn't available immediately
                 if let current = state.nowPlayingItemID,
                    let idx = state.queue.firstIndex(where: { $0.id == current }) {
-                    let nextIndex = min(idx + 1, state.queue.count - 1)
-                    state.nowPlayingItemID = state.queue.indices.contains(nextIndex)
-                        ? state.queue[nextIndex].id
-                        : state.queue.last?.id
+                    let nextIndex = idx + 1
+                    if state.queue.indices.contains(nextIndex) {
+                        state.nowPlayingItemID = state.queue[nextIndex].id
+                    } else if let last = state.queue.last?.id {
+                        state.nowPlayingItemID = last
+                    }
+                } else {
+                    state.nowPlayingItemID = state.queue.first?.id
                 }
+                lastManualSkipAt = Date()
+                DebugLog.shared.add("HOST", "manual skip updated nowPlaying=\(String(describing: state.nowPlayingItemID))")
                 broadcastSnapshot()
             } catch {
                 DebugLog.shared.add("HOST", "skip failed: \(error.localizedDescription)")
@@ -691,8 +760,48 @@ final class PartyHostController: ObservableObject {
     }
 
     func adminRemoveFromQueue(itemID: UUID) {
-        removeFromQueueDueToDown(itemID: itemID)
-        broadcastSnapshot()
+        DebugLog.shared.add("HOST-ADMIN", "adminRemoveFromQueue itemID=\(itemID) nowPlaying=\(String(describing: state.nowPlayingItemID))")
+        if state.nowPlayingItemID == itemID {
+            Task { [weak self] in
+                guard let self else { return }
+                DebugLog.shared.add("HOST-ADMIN", "removing current item -> skipToNext()")
+                do {
+                    try await self.playback.skipToNext()
+                    // Advance logical nowPlaying to the next item if possible
+                    if let idx = self.state.queue.firstIndex(where: { $0.id == itemID }) {
+                        let nextIndex = idx + 1
+                        if self.state.queue.indices.contains(nextIndex) {
+                            self.state.nowPlayingItemID = self.state.queue[nextIndex].id
+                        } else if let last = self.state.queue.last?.id {
+                            self.state.nowPlayingItemID = last
+                        } else {
+                            self.state.nowPlayingItemID = nil
+                        }
+                    } else {
+                        // If the item was already not found (edge case), best-effort set to first
+                        self.state.nowPlayingItemID = self.state.queue.first?.id
+                    }
+                    self.removeFromQueueDueToDown(itemID: itemID)
+                    self.lastManualSkipAt = Date()
+                    DebugLog.shared.add("HOST-ADMIN", "removed current itemID=\(itemID); nowPlaying=\(String(describing: self.state.nowPlayingItemID)); queueCount=\(self.state.queue.count)")
+                    self.broadcastSnapshot()
+                    await self.rebuildPlayerQueuePreservingCurrent()
+                } catch {
+                    DebugLog.shared.add("HOST", "adminRemoveFromQueue skip failed: \(error.localizedDescription)")
+                    // Even if skip fails, remove from state to keep UI consistent
+                    self.removeFromQueueDueToDown(itemID: itemID)
+                    self.broadcastSnapshot()
+                    await self.rebuildPlayerQueuePreservingCurrent()
+                }
+            }
+        } else {
+            DebugLog.shared.add("HOST-ADMIN", "removing non-current itemID=\(itemID)")
+            removeFromQueueDueToDown(itemID: itemID)
+            broadcastSnapshot()
+            Task { [weak self] in
+                await self?.rebuildPlayerQueuePreservingCurrent()
+            }
+        }
     }
     
     func requestSendToEndApproval(itemID: UUID) -> UUID {
@@ -756,6 +865,13 @@ final class PartyHostController: ObservableObject {
         memberDecisions[itemID] = nil
         guard let idx = state.queue.firstIndex(where: { $0.id == itemID }) else { return }
         let item = state.queue[idx]
+        let isCurrent = (state.nowPlayingItemID == itemID)
+        let prevBlock = blockedSongCounts[item.songID] ?? 0
+        if !isCurrent {
+            blockedSongCounts[item.songID, default: 0] += 1
+        }
+        let newBlock = blockedSongCounts[item.songID] ?? 0
+        DebugLog.shared.add("HOST-REMOVE", "removed itemID=\(itemID) songID=\(item.songID) isCurrent=\(isCurrent) blockCount \(prevBlock)->\(newBlock)")
         // Append to removed list if not already present
         if !removedItems.contains(where: { $0.id == itemID }) {
             removedItems.insert(item, at: 0)
@@ -783,6 +899,50 @@ final class PartyHostController: ObservableObject {
         guard let idx = state.queue.firstIndex(where: { $0.id == itemID }) else { return }
         state.queue[idx].upVotes = []
         state.queue[idx].downVotes = []
+    }
+
+    /// Rebuild the underlying MusicKit player queue to reflect the current logical state.queue.
+    /// Places the current logical nowPlaying item (if any) at the front so playback continues from there.
+    private func rebuildPlayerQueuePreservingCurrent() async {
+        let wasPlaying = playback.isPlaying
+
+        // Capture current logical position to restore it after rebuilding the queue
+        let previousPosition = nowPlaying?.positionSeconds ?? playback.currentTime
+
+        // Build list of catalog song IDs starting from the logical nowPlaying item if possible
+        let songIDs: [String] = {
+            if let nowID = state.nowPlayingItemID,
+               let nowIdx = state.queue.firstIndex(where: { $0.id == nowID }) {
+                return Array(state.queue[nowIdx...].map { $0.songID })
+            } else {
+                return state.queue.map { $0.songID }
+            }
+        }()
+
+        if songIDs.isEmpty {
+            DebugLog.shared.add("MUSIC", "rebuild queue: empty, pausing")
+            playback.pause()
+            broadcastSnapshot()
+            return
+        }
+
+        do {
+            DebugLog.shared.add("MUSIC", "rebuild queue: setting \(songIDs.count) items (preserve current if possible)")
+            try await playback.setQueue(withCatalogSongIDs: songIDs)
+
+            // Restore playback position if we have a meaningful timestamp (> ~0.25s)
+            if previousPosition > 0.25 {
+                playback.seek(to: previousPosition)
+            }
+
+            if wasPlaying {
+                try? await playback.play()
+            }
+            // Ensure guests get the latest state immediately after rebuilding
+            broadcastSnapshot()
+        } catch {
+            DebugLog.shared.add("MUSIC", "rebuild queue failed: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Snapshot / send helpers
@@ -861,19 +1021,23 @@ final class PartyHostController: ObservableObject {
                 do {
                     try await self.playback.skipToNext()
                     if let idx = self.state.queue.firstIndex(where: { $0.id == itemID }) {
-                        let nextIndex = min(idx + 1, self.state.queue.count - 1)
-                        self.state.nowPlayingItemID = self.state.queue.indices.contains(nextIndex)
-                            ? self.state.queue[nextIndex].id
-                            : self.state.queue.last?.id
+                        let nextIndex = idx + 1
+                        if self.state.queue.indices.contains(nextIndex) {
+                            self.state.nowPlayingItemID = self.state.queue[nextIndex].id
+                        } else if let last = self.state.queue.last?.id {
+                            self.state.nowPlayingItemID = last
+                        }
                     }
                     self.state.queue.removeAll { $0.id == itemID }
+                    self.lastManualSkipAt = Date()
                     self.broadcastSnapshot()
                 } catch {
                     DebugLog.shared.add("HOST", "approveSkipRequest failed: \(error.localizedDescription)")
                 }
             }
         } else {
-            state.queue.removeAll { $0.id == itemID }
+            DebugLog.shared.add("HOST-SKIP", "approveSkipRequest remove non-current itemID=\(itemID)")
+            removeFromQueueDueToDown(itemID: itemID)
             broadcastSnapshot()
         }
     }

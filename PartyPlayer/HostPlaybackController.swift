@@ -113,6 +113,20 @@ final class HostPlaybackController: ObservableObject {
         DebugLog.shared.add(prefix, "diag authStatus=\(status) playbackStatus=\(playbackStatus) time=\(time)")
     }
 
+    // Expose current playback time for state restoration during queue rebuilds
+    var currentTime: TimeInterval { playbackTime }
+
+    // Seek to a specific playback position on the active player
+    func seek(to seconds: TimeInterval) {
+        let clamped = max(0, seconds)
+        if isRunningOnMac {
+            appPlayer.playbackTime = clamped
+        } else {
+            systemPlayer.playbackTime = clamped
+        }
+        DebugLog.shared.add("MUSIC", String(format: "seek(to: %.2f)", clamped))
+    }
+
     // MARK: - Queue
 
     /// catalogSongIDs = Apple Music Song IDs als String, z.B. "203709340"
@@ -188,7 +202,7 @@ final class HostPlaybackController: ObservableObject {
 
     func startTick(
         every seconds: Double = 1.0,
-        onTick: @escaping (_ isPlaying: Bool, _ position: Double) -> Void
+        onTick: @escaping (_ isPlaying: Bool, _ position: Double, _ currentSongID: String?) -> Void
     ) {
         tickTask?.cancel()
         tickTask = Task { [weak self] in
@@ -196,8 +210,21 @@ final class HostPlaybackController: ObservableObject {
             while !Task.isCancelled {
                 let pos = self.playbackTime
                 let playing = (self.playbackStatus == .playing)
+                // Determine current song ID from active player's queue currentEntry
+                let currentSongID: String? = {
+                    if self.isRunningOnMac {
+                        if let song = self.appPlayer.queue.currentEntry?.item as? Song {
+                            return song.id.rawValue
+                        }
+                    } else {
+                        if let song = self.systemPlayer.queue.currentEntry?.item as? Song {
+                            return song.id.rawValue
+                        }
+                    }
+                    return nil
+                }()
                 await MainActor.run { self.isPlaying = playing }
-                onTick(playing, pos)
+                onTick(playing, pos, currentSongID)
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             }
         }
