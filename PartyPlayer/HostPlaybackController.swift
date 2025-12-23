@@ -115,6 +115,20 @@ final class HostPlaybackController: ObservableObject {
 
     // Expose current playback time for state restoration during queue rebuilds
     var currentTime: TimeInterval { playbackTime }
+    
+    // Expose current song ID from the active player's queue (if available)
+    var currentSongID: String? {
+        if isRunningOnMac {
+            if let song = appPlayer.queue.currentEntry?.item as? Song {
+                return song.id.rawValue
+            }
+        } else {
+            if let song = systemPlayer.queue.currentEntry?.item as? Song {
+                return song.id.rawValue
+            }
+        }
+        return nil
+    }
 
     // Seek to a specific playback position on the active player
     func seek(to seconds: TimeInterval) {

@@ -235,6 +235,7 @@ private struct HostTabsView: View {
     @State private var lastInteractionAt: Date = Date()
 
     @State private var nowPlayingRenderKey = UUID()
+    @State private var adminAutoLockSeconds: Int = 0
 
     var badgeCount: Int {
         host.pendingVoteOutcomes.count + host.pendingSkipRequests.count
@@ -283,7 +284,9 @@ private struct HostTabsView: View {
 
     private func scheduleAutoLock() {
         adminLockTimer?.invalidate()
-        adminLockTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: false) { _ in
+        adminLockTimer = nil
+        guard adminAutoLockSeconds > 0 else { return }
+        adminLockTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(adminAutoLockSeconds), repeats: false) { _ in
             adminUnlocked = false
             hostTab = .publicView
         }
@@ -432,11 +435,19 @@ private struct HostTabsView: View {
                                 Text("\(host.maxConcurrentActions)")
                             }
                         }
+                        HStack(spacing: 12) {
+                            Text("Admin-Sperre (Sek.):")
+                            Stepper(value: $adminAutoLockSeconds, in: 0...120) {
+                                Text("\(adminAutoLockSeconds)s")
+                                    .frame(width: 60, alignment: .trailing)
+                            }
+                        }
                     }
                     .onChange(of: host.votingMode) { _, _ in registerInteraction() }
                     .onChange(of: host.perItemCooldownMinutes) { _, _ in registerInteraction() }
                     .onChange(of: host.voteThresholdPercent) { _, _ in registerInteraction() }
                     .onChange(of: host.maxConcurrentActions) { _, _ in registerInteraction() }
+                    .onChange(of: adminAutoLockSeconds) { _, _ in scheduleAutoLock() }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                     // Pending approvals and skip requests (reuse from HostView via new small views)
@@ -880,7 +891,7 @@ private struct HostPlayedAdminRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Ans Ende") { host.approveVoteOutcome(id: host.requestSendToEndApproval(itemID: item.id)) }
+            Button("Ans Ende") { host.adminMoveToEnd(itemID: item.id) }
                 .buttonStyle(.bordered)
         }
         .listRowBackground(Color.clear)
@@ -1248,13 +1259,9 @@ struct HostView: View {
                 .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Ans Ende") { host.approveVoteOutcome(id: enqueueSendToEndForHost(itemID: item.id)) }
+            Button("Ans Ende") { host.adminMoveToEnd(itemID: item.id) }
                 .buttonStyle(.bordered)
         }
-    }
-
-    private func enqueueSendToEndForHost(itemID: UUID) -> UUID {
-        return host.requestSendToEndApproval(itemID: itemID)
     }
 
     private func playlistRow(item: QueueItem) -> some View {

@@ -26,4 +26,73 @@ actor PlaylistEngine {
         cursorIndex = nextIdx
         return items[nextIdx]
     }
+
+    func removeItem(withID id: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        items.remove(at: index)
+        if let c = cursorIndex {
+            if index < c {
+                cursorIndex = max(0, c - 1)
+            } else if index == c {
+                // Keep cursor pointing at the same numeric index, which now refers to what used to be the next item.
+                if items.isEmpty {
+                    cursorIndex = nil
+                } else if index >= items.count {
+                    cursorIndex = items.count - 1
+                } else {
+                    cursorIndex = index
+                }
+            }
+        }
+    }
+
+    func moveItemToEnd(withID id: UUID) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else { return }
+        let item = items.remove(at: index)
+        items.append(item)
+        if let c = cursorIndex {
+            if index < c {
+                cursorIndex = max(0, c - 1)
+            } else if index == c {
+                // Keep cursor pointing at the same numeric index so playback continues with what used to be the next item.
+                if items.isEmpty {
+                    cursorIndex = nil
+                } else if c >= items.count {
+                    cursorIndex = items.count - 1
+                } else {
+                    cursorIndex = c
+                }
+            }
+        }
+    }
+
+    func appendItem(_ item: QueueItem) {
+        items.append(item)
+        if cursorIndex == nil {
+            cursorIndex = 0
+        }
+    }
+
+    func moveItemBehindCurrent(withID id: UUID) {
+        guard let from = items.firstIndex(where: { $0.id == id }) else { return }
+        // Do not move the currently playing item via this API
+        if let c = cursorIndex, from == c { return }
+
+        let moving = items.remove(at: from)
+        // Adjust cursor if removal was before current
+        if let c = cursorIndex {
+            if from < c {
+                cursorIndex = max(0, c - 1)
+            }
+        }
+        // Compute insert index directly behind current
+        if let c2 = cursorIndex {
+            let insertIndex = min(c2 + 1, items.count)
+            items.insert(moving, at: insertIndex)
+        } else {
+            // No current -> put at start
+            items.insert(moving, at: 0)
+            if cursorIndex == nil { cursorIndex = 0 }
+        }
+    }
 }
