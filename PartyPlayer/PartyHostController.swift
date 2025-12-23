@@ -252,7 +252,6 @@ final class PartyHostController: ObservableObject {
             }
             do {
                 let terms = [
-                    "Napalm Death You Suffer",
                     "Liam Lynch United States of Whatever",
                     "Daft Punk One More Time",
                     "The Weeknd Blinding Lights",
@@ -450,7 +449,6 @@ final class PartyHostController: ObservableObject {
 
     private func handleVote(_ vote: PartyMessage.VoteMessage) {
         Task { @MainActor in
-            let now = Date()
             guard let idx = state.queue.firstIndex(where: { $0.id == vote.itemID }) else { return }
 
             // Ignore votes on the currently playing item

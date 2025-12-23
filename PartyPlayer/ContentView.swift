@@ -691,6 +691,7 @@ private struct HostPendingApprovalsPanel: View {
                     ForEach(host.pendingVoteOutcomes) { outcome in
                         let item = host.state.queue.first(where: { $0.id == outcome.itemID })
                         HStack(spacing: 12) {
+                            HostArtworkView(urlString: item?.artworkURL, size: 44)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item?.title ?? "Unbekannter Titel").font(.subheadline).lineLimit(1)
                                 Text(item?.artist ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -2026,4 +2027,5 @@ private struct ArtworkThumbView: View {
         }
     }
 }
+
 
