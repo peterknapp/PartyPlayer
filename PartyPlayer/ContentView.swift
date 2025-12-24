@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import MusicKit
 
 struct ContentView: View {
     @StateObject private var locationService = LocationService()
@@ -237,6 +238,9 @@ private struct HostTabsView: View {
     @State private var nowPlayingRenderKey = UUID()
     @State private var adminAutoLockSeconds: Int = 0
 
+    @State private var showAddSongs: Bool = false
+    @State private var showSettings: Bool = false
+
     var badgeCount: Int {
         host.pendingVoteOutcomes.count + host.pendingSkipRequests.count
     }
@@ -271,6 +275,13 @@ private struct HostTabsView: View {
         }
         .toolbar {
             if hostTab == .admin && adminUnlocked {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Label("Einstellungen", systemImage: "gearshape")
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         lockNow()
@@ -401,54 +412,13 @@ private struct HostTabsView: View {
                             host.skip()
                         }
                         .buttonStyle(.bordered)
+
+                        Button("Songs hinzufügen") {
+                            registerInteraction()
+                            showAddSongs = true
+                        }
+                        .buttonStyle(.bordered)
                     }
-
-                    // Settings
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text("Voting-Modus:").font(.headline)
-                            Picker("Modus", selection: $host.votingMode) {
-                                Text("Automatisch").tag(PartyHostController.VotingMode.automatic)
-                                Text("Host-Genehmigung").tag(PartyHostController.VotingMode.hostApproval)
-                            }
-                            .pickerStyle(.segmented)
-                        }
-
-                        HStack(spacing: 12) {
-                            Text("Cooldown (Minuten):")
-                            Stepper(value: $host.perItemCooldownMinutes, in: 0...120) {
-                                Text("\(host.perItemCooldownMinutes)")
-                            }
-                        }
-
-                        HStack(spacing: 12) {
-                            Text("Voting-Hürde (%):")
-                            Stepper(value: $host.voteThresholdPercent, in: 0...100) {
-                                Text("\(host.voteThresholdPercent)%")
-                                    .frame(width: 44, alignment: .trailing)
-                            }
-                        }
-
-                        HStack(spacing: 12) {
-                            Text("Aktion-Slots:")
-                            Stepper(value: $host.maxConcurrentActions, in: 1...10) {
-                                Text("\(host.maxConcurrentActions)")
-                            }
-                        }
-                        HStack(spacing: 12) {
-                            Text("Admin-Sperre (Sek.):")
-                            Stepper(value: $adminAutoLockSeconds, in: 0...120) {
-                                Text("\(adminAutoLockSeconds)s")
-                                    .frame(width: 60, alignment: .trailing)
-                            }
-                        }
-                    }
-                    .onChange(of: host.votingMode) { _, _ in registerInteraction() }
-                    .onChange(of: host.perItemCooldownMinutes) { _, _ in registerInteraction() }
-                    .onChange(of: host.voteThresholdPercent) { _, _ in registerInteraction() }
-                    .onChange(of: host.maxConcurrentActions) { _, _ in registerInteraction() }
-                    .onChange(of: adminAutoLockSeconds) { _, _ in scheduleAutoLock() }
-                    .frame(maxWidth: .infinity, alignment: .leading)
 
                     // Pending approvals and skip requests (reuse from HostView via new small views)
                     HostPendingApprovalsPanel(host: host)
@@ -470,6 +440,23 @@ private struct HostTabsView: View {
             }
             .onDisappear {
                 adminLockTimer?.invalidate()
+            }
+            .onChange(of: adminAutoLockSeconds) { _, _ in
+                scheduleAutoLock()
+            }
+            .sheet(isPresented: $showAddSongs) {
+                AdminAddSongsView(host: host) {
+                    // onClose
+                    showAddSongs = false
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                AdminSettingsView(
+                    host: host,
+                    adminAutoLockSeconds: $adminAutoLockSeconds,
+                    onDone: { showSettings = false },
+                    onInteraction: { registerInteraction() }
+                )
             }
 
             HostAdminPlaylist(host: host)
@@ -2028,4 +2015,250 @@ private struct ArtworkThumbView: View {
     }
 }
 
+private struct AdminAddSongsView: View {
+    @ObservedObject var host: PartyHostController
+    var onClose: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText: String = ""
+    @State private var results: [Song] = []
+    @State private var isSearching = false
+    @State private var selected: Set<MusicItemID> = []
+    @State private var errorMessage: String? = nil
+
+    // Debounce search
+    @State private var searchTask: Task<Void, Never>? = nil
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                searchField
+                content
+            }
+            .navigationTitle("Songs suchen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Abbrechen") { close() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Hinzufügen") { addSelected() }
+                        .disabled(selected.isEmpty)
+                }
+            }
+        }
+        .onDisappear { searchTask?.cancel() }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Titel, Künstler…", text: $searchText)
+                .textFieldStyle(.plain)
+                .onChange(of: searchText) { _, newValue in scheduleSearch(for: newValue) }
+            if !searchText.isEmpty {
+                Button(action: { searchText = ""; results = []; selected.removeAll() }) {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding([.horizontal, .top])
+    }
+
+    @ViewBuilder private var content: some View {
+        if let msg = errorMessage {
+            VStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.secondary)
+                Text(msg).multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+        } else if isSearching {
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Suche…").foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if results.isEmpty {
+            VStack(spacing: 8) {
+                Text("Gib einen Suchbegriff ein, um Apple Music zu durchsuchen.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List(results, id: \.id) { song in
+                SongRow(song: song, isSelected: selected.contains(song.id)) {
+                    toggleSelection(song.id)
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+    }
+
+    private func scheduleSearch(for term: String) {
+        searchTask?.cancel()
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { self.results = []; self.isSearching = false; self.errorMessage = nil; return }
+        isSearching = true
+        errorMessage = nil
+        searchTask = Task { @MainActor in
+            // Debounce ~250ms
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            do {
+                let found = try await host.searchCatalogSongs(term: trimmed, limit: 25)
+                guard !Task.isCancelled else { return }
+                self.results = found
+                self.isSearching = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.results = []
+                self.isSearching = false
+                self.errorMessage = (error as NSError).localizedDescription
+            }
+        }
+    }
+
+    private func toggleSelection(_ id: MusicItemID) {
+        if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
+    }
+
+    private func addSelected() {
+        let songs = results.filter { selected.contains($0.id) }
+        host.adminAppendSongs(songs)
+        close()
+    }
+
+    private func close() {
+        dismiss()
+        onClose()
+    }
+
+    // MARK: - Row
+    private struct SongRow: View {
+        let song: Song
+        let isSelected: Bool
+        let onTap: () -> Void
+
+        var body: some View {
+            HStack(spacing: 12) {
+                // Artwork
+                if let url = song.artwork?.url(width: 80, height: 80) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let image): image.resizable().scaledToFill()
+                        default: placeholder
+                        }
+                    }
+                    .frame(width: 44, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    placeholder.frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(song.title).font(.headline).lineLimit(1)
+                    Text(song.artistName).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill").foregroundColor(.accentColor)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { onTap() }
+        }
+
+        private var placeholder: some View {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
+                Image(systemName: "music.note").foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct AdminSettingsView: View {
+    @ObservedObject var host: PartyHostController
+    @Binding var adminAutoLockSeconds: Int
+    var onDone: () -> Void
+    var onInteraction: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Voting-Modus") {
+                    Picker("Modus", selection: $host.votingMode) {
+                        Text("Automatisch").tag(PartyHostController.VotingMode.automatic)
+                        Text("Host-Genehmigung").tag(PartyHostController.VotingMode.hostApproval)
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Section("Limits") {
+                    Stepper(value: $host.perItemCooldownMinutes, in: 0...120) {
+                        HStack {
+                            Text("Cooldown (Minuten)")
+                            Spacer()
+                            Text("\(host.perItemCooldownMinutes)")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Stepper(value: $host.voteThresholdPercent, in: 0...100) {
+                        HStack {
+                            Text("Voting-Hürde (%)")
+                            Spacer()
+                            Text("\(host.voteThresholdPercent)%")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Stepper(value: $host.maxConcurrentActions, in: 1...10) {
+                        HStack {
+                            Text("Aktion-Slots")
+                            Spacer()
+                            Text("\(host.maxConcurrentActions)")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("Sicherheit") {
+                    Stepper(value: $adminAutoLockSeconds, in: 0...120) {
+                        HStack {
+                            Text("Admin-Sperre (Sek.)")
+                            Spacer()
+                            Text("\(adminAutoLockSeconds)s")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Einstellungen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Fertig") { close() }
+                }
+            }
+            .onChange(of: host.votingMode) { _, _ in onInteraction() }
+            .onChange(of: host.perItemCooldownMinutes) { _, _ in onInteraction() }
+            .onChange(of: host.voteThresholdPercent) { _, _ in onInteraction() }
+            .onChange(of: host.maxConcurrentActions) { _, _ in onInteraction() }
+            .onChange(of: adminAutoLockSeconds) { _, _ in onInteraction() }
+        }
+    }
+
+    private func close() {
+        dismiss()
+        onDone()
+    }
+}
 

@@ -304,6 +304,67 @@ final class PartyHostController: ObservableObject {
         }
     }
 
+    // MARK: - Admin: Search & Append Songs
+
+    /// Search Apple Music catalog for songs matching a term (dynamic search for admin UI)
+    func searchCatalogSongs(term: String, limit: Int = 25) async throws -> [Song] {
+        // Ensure MusicKit authorization
+        await self.playback.requestAuthorization()
+        guard self.playback.isAuthorized else {
+            throw NSError(
+                domain: "PartyHostController",
+                code: 10,
+                userInfo: [NSLocalizedDescriptionKey: "Music-Autorisierung fehlt. Bitte in der Musik-App anmelden und Zugriff erlauben."]
+            )
+        }
+        var request = MusicCatalogSearchRequest(term: term, types: [Song.self])
+        request.limit = max(1, min(limit, 50))
+        let response = try await request.response()
+        return Array(response.songs)
+    }
+
+    /// Append selected catalog songs to the logical playlist (end of queue). If the queue was empty, set the first as current and prepare the player queue.
+    func adminAppendSongs(_ songs: [Song]) {
+        guard !songs.isEmpty else { return }
+        Task { @MainActor in
+            let now = Date()
+            let items: [QueueItem] = songs.map { song in
+                let urlString = song.artwork?.url(width: 256, height: 256)?.absoluteString
+                return QueueItem(
+                    id: UUID(),
+                    songID: song.id.rawValue,
+                    title: song.title,
+                    artist: song.artistName,
+                    artworkURL: urlString,
+                    durationSeconds: song.duration,
+                    addedBy: self.hostMemberID,
+                    addedAt: now,
+                    upVotes: [],
+                    downVotes: []
+                )
+            }
+
+            // Append each item to the engine
+            for item in items { await self.playlist.appendItem(item) }
+
+            // Mirror engine state back to controller state
+            let snapshot = await self.playlist.itemsSnapshot()
+            self.state.queue = snapshot
+
+            // If nothing was current, set current and prepare the player queue (do not auto-play)
+            if self.state.nowPlayingItemID == nil, let current = await self.playlist.current() {
+                self.state.nowPlayingItemID = current.id
+                do {
+                    try await self.playback.setQueue(withCatalogSongIDs: [current.songID])
+                } catch {
+                    DebugLog.shared.add("HOST", "prepare player after append failed: \(error.localizedDescription)")
+                }
+            }
+
+            self.broadcastSnapshot()
+        }
+    }
+
     func togglePlayPause() {
         Task {
             do {
