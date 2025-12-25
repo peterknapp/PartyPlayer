@@ -413,31 +413,52 @@ private struct HostTabsView: View {
                 Text("Gäste: \(host.state.members.count)")
                     .font(.headline)
 
-                HStack(spacing: 12) {
-                    Button("Demosongs laden") {
-                        registerInteraction()
-                        host.loadDemoAndPlay()
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button("Play/Pause") {
+                HStack(spacing: 16) {
+                    // Play/Pause (dynamisch)
+                    Button {
                         registerInteraction()
                         host.togglePlayPause()
+                    } label: {
+                        Image(systemName: (host.nowPlaying?.isPlaying ?? false) ? "pause.fill" : "play.fill")
+                            .font(.title2)
                     }
-                    .buttonStyle(.bordered)
+                    .accessibilityLabel((host.nowPlaying?.isPlaying ?? false) ? "Pause" : "Play")
+                    .disabled(host.state.queue.isEmpty)
 
-                    Button("Skip") {
+                    // Skip (nur aktiv, wenn Playing)
+                    Button {
                         registerInteraction()
                         host.skip()
+                    } label: {
+                        Image(systemName: "forward.end.fill")
+                            .font(.title2)
                     }
-                    .buttonStyle(.bordered)
+                    .disabled(!(host.nowPlaying?.isPlaying ?? false))
+                    .accessibilityLabel("Skip")
 
-                    Button("Songs hinzufügen") {
+                    // Songs hinzufügen
+                    Button {
                         registerInteraction()
                         showAddSongs = true
+                    } label: {
+                        Image(systemName: "plus.circle")
+                            .font(.title2)
                     }
-                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Songs hinzufügen")
+
+                    // Demosongs laden
+                    Button {
+                        registerInteraction()
+                        host.loadDemoAndPlay()
+                    } label: {
+                        Image(systemName: "tray.and.arrow.down")
+                            .font(.title2)
+                    }
+                    .accessibilityLabel("Demosongs laden")
                 }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .controlSize(.large)
             }
             .padding()
 
