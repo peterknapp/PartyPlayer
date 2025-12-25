@@ -286,10 +286,13 @@ final class PartyHostController: ObservableObject {
                 state.queue = snapshot
                 state.nowPlayingItemID = snapshot.first?.id
 
-                // Start first song if available
+                // Prepare player queue for first song (do not auto-play)
                 if let first = await playlist.current() {
-                    try await playback.setQueue(withCatalogSongIDs: [first.songID])
-                    try await playback.play()
+                    do {
+                        try await playback.setQueue(withCatalogSongIDs: [first.songID])
+                    } catch {
+                        DebugLog.shared.add("HOST", "prepare player after demo load failed: \(error.localizedDescription)")
+                    }
                     didAutoAdvanceForCurrentItem = false
                 }
 

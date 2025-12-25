@@ -339,21 +339,20 @@ private struct HostTabsView: View {
 
     private var publicTab: some View {
         VStack(spacing: 0) {
-            // Header and counters in a scrolling container, like admin
-            ScrollView {
-                VStack(spacing: 16) {
-                    VStack(spacing: 8) {
-                        Text("Zum Mitmachen QR scannen")
-                            .font(.headline)
-                        QRCodeView(text: "PP|\(host.state.sessionID)|\(host.joinCode)")
-                    }
-
-                    Text("Gäste: \(host.state.members.count)")
+            // Statischer Header (QR + Zähler), nicht scrollbar
+            VStack(spacing: 16) {
+                VStack(spacing: 8) {
+                    Text("Zum Mitmachen QR scannen")
                         .font(.headline)
+                    QRCodeView(text: "PP|\(host.state.sessionID)|\(host.joinCode)")
+                        .frame(maxWidth: 280, maxHeight: 280)
                 }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .top)
+
+                Text("Gäste: \(host.state.members.count)")
+                    .font(.headline)
             }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .top)
 
             // Playlist takes the remaining space, like admin's HostAdminPlaylist
             Group {
@@ -415,7 +414,7 @@ private struct HostTabsView: View {
                     .font(.headline)
 
                 HStack(spacing: 12) {
-                    Button("Demo laden & Play") {
+                    Button("Demosongs laden") {
                         registerInteraction()
                         host.loadDemoAndPlay()
                     }
@@ -1177,7 +1176,7 @@ struct HostView: View {
 
     private var controlsRow: some View {
         HStack(spacing: 12) {
-            Button("Demo laden & Play") { host.loadDemoAndPlay() }
+            Button("Demosongs laden") { host.loadDemoAndPlay() }
                 .buttonStyle(.borderedProminent)
 
             Button("Play/Pause") { host.togglePlayPause() }
