@@ -240,6 +240,7 @@ private struct HostTabsView: View {
 
     @State private var showAddSongs: Bool = false
     @State private var showSettings: Bool = false
+    @State private var showInbox: Bool = false
 
     var badgeCount: Int {
         host.pendingVoteOutcomes.count + host.pendingSkipRequests.count
@@ -252,7 +253,9 @@ private struct HostTabsView: View {
                 .tag(ContentView.HostTab.publicView)
 
             adminTab
-                .tabItem { Label("Admin", systemImage: "gear") }
+                .tabItem {
+                    Label("Admin", systemImage: "gear")
+                }
                 .badge(badgeCount)
                 .tag(ContentView.HostTab.admin)
         }
@@ -275,6 +278,26 @@ private struct HostTabsView: View {
         }
         .toolbar {
             if hostTab == .admin && adminUnlocked {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        registerInteraction()
+                        showInbox = true
+                    } label: {
+                        Label("Meldungen", systemImage: "tray.full")
+                            .overlay(alignment: .topTrailing) {
+                                if badgeCount > 0 {
+                                    ZStack {
+                                        Circle().fill(Color.red)
+                                        Text(String(min(badgeCount, 99)))
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundColor(.white)
+                                    }
+                                    .frame(width: 16, height: 16)
+                                    .offset(x: 8, y: -8)
+                                }
+                            }
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         showSettings = true
@@ -386,81 +409,66 @@ private struct HostTabsView: View {
 
     private var adminTab: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(spacing: 16) {
-                    Text("Gäste: \(host.state.members.count)")
-                        .font(.headline)
+            // Header + Controls (keine ScrollView, damit die Liste den Rest füllt)
+            VStack(spacing: 16) {
+                Text("Gäste: \(host.state.members.count)")
+                    .font(.headline)
 
-                    // REMOVED:
-                    // HostNowPlayingPanel(host: host)
-                    //     .id(nowPlayingRenderKey)
-
-                    // Controls
-                    HStack(spacing: 12) {
-                        Button("Demo laden & Play") {
-                            registerInteraction()
-                            host.loadDemoAndPlay()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        Button("Play/Pause") {
-                            registerInteraction()
-                            host.togglePlayPause()
-                        }
-                        .buttonStyle(.bordered)
-                        Button("Skip") {
-                            registerInteraction()
-                            host.skip()
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Songs hinzufügen") {
-                            registerInteraction()
-                            showAddSongs = true
-                        }
-                        .buttonStyle(.bordered)
+                HStack(spacing: 12) {
+                    Button("Demo laden & Play") {
+                        registerInteraction()
+                        host.loadDemoAndPlay()
                     }
+                    .buttonStyle(.borderedProminent)
 
-                    // Pending approvals and skip requests (reuse from HostView via new small views)
-                    HostPendingApprovalsPanel(host: host)
-                    HostSkipRequestsPanel(host: host)
-                    HostRemovedItemsPanel(host: host)
+                    Button("Play/Pause") {
+                        registerInteraction()
+                        host.togglePlayPause()
+                    }
+                    .buttonStyle(.bordered)
 
-                    // Admin playlist with remove option
-                    // HostAdminPlaylist(host: host)  <-- THIS LINE REMOVED
+                    Button("Skip") {
+                        registerInteraction()
+                        host.skip()
+                    }
+                    .buttonStyle(.bordered)
 
-                }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .top)
-                .onTapGesture {
-                    registerInteraction()
-                }
-            }
-            .onAppear {
-                scheduleAutoLock()
-            }
-            .onDisappear {
-                adminLockTimer?.invalidate()
-            }
-            .onChange(of: adminAutoLockSeconds) { _, _ in
-                scheduleAutoLock()
-            }
-            .sheet(isPresented: $showAddSongs) {
-                AdminAddSongsView(host: host) {
-                    // onClose
-                    showAddSongs = false
+                    Button("Songs hinzufügen") {
+                        registerInteraction()
+                        showAddSongs = true
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
-            .sheet(isPresented: $showSettings) {
-                AdminSettingsView(
-                    host: host,
-                    adminAutoLockSeconds: $adminAutoLockSeconds,
-                    onDone: { showSettings = false },
-                    onInteraction: { registerInteraction() }
-                )
-            }
+            .padding()
 
-            HostAdminPlaylist(host: host)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !host.state.queue.isEmpty {
+                HostAdminPlaylist(host: host)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Spacer(minLength: 0)
+            }
+        }
+        .onAppear { scheduleAutoLock() }
+        .onDisappear { adminLockTimer?.invalidate() }
+        .onChange(of: adminAutoLockSeconds) { _, _ in scheduleAutoLock() }
+        .sheet(isPresented: $showAddSongs) {
+            AdminAddSongsView(host: host) {
+                showAddSongs = false
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            AdminSettingsView(
+                host: host,
+                adminAutoLockSeconds: $adminAutoLockSeconds,
+                onDone: { showSettings = false },
+                onInteraction: { registerInteraction() }
+            )
+        }
+        .sheet(isPresented: $showInbox) {
+            AdminInboxView(host: host) {
+                showInbox = false
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -2253,6 +2261,38 @@ private struct AdminSettingsView: View {
             .onChange(of: host.voteThresholdPercent) { _, _ in onInteraction() }
             .onChange(of: host.maxConcurrentActions) { _, _ in onInteraction() }
             .onChange(of: adminAutoLockSeconds) { _, _ in onInteraction() }
+        }
+    }
+
+    private func close() {
+        dismiss()
+        onDone()
+    }
+}
+
+private struct AdminInboxView: View {
+    @ObservedObject var host: PartyHostController
+    var onDone: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 16) {
+                    HostPendingApprovalsPanel(host: host)
+                    HostSkipRequestsPanel(host: host)
+                    HostRemovedItemsPanel(host: host)
+                }
+                .padding()
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
+            .navigationTitle("Meldungen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Fertig") { close() }
+                }
+            }
         }
     }
 
