@@ -859,11 +859,15 @@ private struct HostAdminPlaylist: View {
     }
 }
 
+// *** Modified HostAdminRow per instructions ***
+
 private struct HostAdminRow: View {
     @ObservedObject var host: PartyHostController
     let item: QueueItem
     let isCurrent: Bool
     let nowPlayingPos: Double
+    @State private var showDeleteConfirm: Bool = false
+
     var body: some View {
         let total = max(1, item.durationSeconds ?? 240)
         let pos = min(max(0, nowPlayingPos), total)
@@ -897,11 +901,34 @@ private struct HostAdminRow: View {
             }
             Spacer()
             if !isCurrent {
-                Button("Entfernen") { host.adminRemoveFromQueue(itemID: item.id) }
-                    .buttonStyle(.bordered)
+                Button {
+                    showDeleteConfirm = true
+                } label: {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.red)
+                        .accessibilityLabel("Entfernen")
+                }
+                .buttonStyle(.borderless)
             }
         }
         .padding(.vertical, 6)
+        .alert("Song entfernen?", isPresented: $showDeleteConfirm) {
+            Button("Entfernen", role: .destructive) {
+                host.adminRemoveFromQueue(itemID: item.id)
+            }
+            Button("Abbrechen", role: .cancel) { }
+        } message: {
+            Text("\"\(item.title)\" wirklich aus der Playlist entfernen?")
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            if !isCurrent {
+                Button(role: .destructive) {
+                    host.adminRemoveFromQueue(itemID: item.id)
+                } label: {
+                    Label("Entfernen", systemImage: "trash")
+                }
+            }
+        }
         .listRowBackground(isCurrent ? Color.primary.opacity(0.06) : Color.clear)
     }
     
