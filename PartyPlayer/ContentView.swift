@@ -1,6 +1,9 @@
 import SwiftUI
 import Combine
 import MusicKit
+#if os(iOS)
+import UIKit
+#endif
 
 struct ContentView: View {
     @StateObject private var locationService = LocationService()
@@ -795,12 +798,19 @@ private struct HostRemovedItemsPanel: View {
 
 private struct HostAdminPlaylist: View {
     @ObservedObject var host: PartyHostController
+    
     var body: some View {
         List {
-            Section("Playlist") {
-                ForEach(playlistItems) { item in
+            Section {
+                if let current = currentItem {
+                    HostAdminRow(host: host, item: current, isCurrent: true, nowPlayingPos: host.nowPlaying?.positionSeconds ?? 0)
+                }
+                ForEach(upcomingItems) { item in
                     HostAdminRow(host: host, item: item, isCurrent: host.state.nowPlayingItemID == item.id, nowPlayingPos: host.nowPlaying?.positionSeconds ?? 0)
                 }
+                .onMove(perform: moveUpcoming)
+            } header: {
+                Text("Playlist")
             }
             Section("Bereits gespielt") {
                 ForEach(playedItems) { item in
@@ -808,19 +818,28 @@ private struct HostAdminPlaylist: View {
                 }
             }
         }
+        .environment(\.editMode, .constant(.active))
         .scrollContentBackground(.hidden)
         .background(Color(.systemBackground))
         .listStyle(.insetGrouped)
         .frame(minHeight: 260)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
-    private var playlistItems: [QueueItem] {
-        if let nowID = host.state.nowPlayingItemID,
-           let nowIdx = host.state.queue.firstIndex(where: { $0.id == nowID }) {
-            return Array(host.state.queue[nowIdx...])
-        }
-        return host.state.queue
+    
+    private var currentItem: QueueItem? {
+        guard let nowID = host.state.nowPlayingItemID,
+              let idx = host.state.queue.firstIndex(where: { $0.id == nowID }) else { return nil }
+        return host.state.queue[idx]
     }
+    
+    private func moveUpcoming(from source: IndexSet, to destination: Int) {
+        host.adminReorderUpcoming(fromOffsets: source, toOffset: destination)
+        #if os(iOS)
+        let generator = UIImpactFeedbackGenerator(style: .medium)
+        generator.impactOccurred()
+        #endif
+    }
+
     private var upcomingItems: [QueueItem] {
         guard let nowID = host.state.nowPlayingItemID,
               let nowIdx = host.state.queue.firstIndex(where: { $0.id == nowID }) else {
@@ -830,6 +849,7 @@ private struct HostAdminPlaylist: View {
         guard host.state.queue.indices.contains(nextIndex) else { return [] }
         return Array(host.state.queue[nextIndex...])
     }
+
     private var playedItems: [QueueItem] {
         guard let nowID = host.state.nowPlayingItemID,
               let nowIdx = host.state.queue.firstIndex(where: { $0.id == nowID }) else {

@@ -95,4 +95,34 @@ actor PlaylistEngine {
             if cursorIndex == nil { cursorIndex = 0 }
         }
     }
+
+    /// Reorder upcoming items (items after the current cursor). If there is no current item, reorders the entire list.
+    func reorderUpcoming(fromOffsets: IndexSet, toOffset: Int) {
+        // Determine the base index for upcoming items: cursor+1, or 0 if no current
+        let base = (cursorIndex ?? -1) + 1
+        guard base >= 0 && base <= items.count else { return }
+        // Map local (upcoming-slice) indices to global indices
+        let fromGlobals = fromOffsets.map { base + $0 }.sorted()
+        // Validate indices are within bounds and do not include the current index
+        guard !fromGlobals.isEmpty else { return }
+        if let c = cursorIndex, fromGlobals.contains(c) { return } // never move current
+        // Extract moving elements (preserve original order)
+        var moving: [QueueItem] = []
+        for idx in fromGlobals.reversed() {
+            guard items.indices.contains(idx) else { return }
+            let element = items.remove(at: idx)
+            moving.insert(element, at: 0)
+        }
+        // Compute global insertion target
+        var target = base + toOffset
+        // Adjust target for removed elements that were before the target
+        let removedBeforeTarget = fromGlobals.filter { $0 < target }.count
+        target -= removedBeforeTarget
+        // Clamp target within valid bounds
+        if target < base { target = base }
+        if target > items.count { target = items.count }
+        // Insert moved elements back
+        items.insert(contentsOf: moving, at: target)
+        // cursorIndex remains valid: we only moved items at or after `base`
+    }
 }

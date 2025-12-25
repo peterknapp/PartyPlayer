@@ -367,6 +367,21 @@ final class PartyHostController: ObservableObject {
             self.broadcastSnapshot()
         }
     }
+    
+    /// Admin: Reorder upcoming items (UI supplies indices relative to the upcoming slice)
+    func adminReorderUpcoming(fromOffsets: IndexSet, toOffset: Int) {
+        Task { @MainActor in
+            await playlist.reorderUpcoming(fromOffsets: fromOffsets, toOffset: toOffset)
+            let snapshot = await playlist.itemsSnapshot()
+            self.state.queue = snapshot
+            if let current = await playlist.current() {
+                self.state.nowPlayingItemID = current.id
+            } else {
+                self.state.nowPlayingItemID = nil
+            }
+            self.broadcastSnapshot()
+        }
+    }
 
     func togglePlayPause() {
         Task {
