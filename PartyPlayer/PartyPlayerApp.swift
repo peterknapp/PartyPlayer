@@ -5,6 +5,7 @@ struct PartyPlayerApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .tint(Brand.accent)
         }
     }
 }

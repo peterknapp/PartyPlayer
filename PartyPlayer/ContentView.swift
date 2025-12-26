@@ -290,7 +290,7 @@ private struct HostTabsView: View {
                             .overlay(alignment: .topTrailing) {
                                 if badgeCount > 0 {
                                     ZStack {
-                                        Circle().fill(Color.red)
+                                        Circle().fill(Brand.gold)
                                         Text(String(min(badgeCount, 99)))
                                             .font(.system(size: 9, weight: .bold))
                                             .foregroundColor(.white)
@@ -654,8 +654,8 @@ private struct HostReadOnlyRow: View {
                 HStack(spacing: 6) {
                     Text(item.title).font(.headline).lineLimit(1)
                     if isCurrent {
-                        Text("▶︎").font(.caption2).foregroundColor(.accentColor)
-                            .padding(2).background(Color.accentColor.opacity(0.1))
+                        Text("▶︎").font(.caption2).foregroundColor(Brand.gold)
+                            .padding(2).background(Brand.gold.opacity(0.12))
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
@@ -910,8 +910,8 @@ private struct HostAdminRow: View {
                 HStack(spacing: 6) {
                     Text(item.title).font(.headline).lineLimit(1)
                     if isCurrent {
-                        Text("▶︎").font(.caption2).foregroundColor(.accentColor)
-                            .padding(2).background(Color.accentColor.opacity(0.1))
+                        Text("▶︎").font(.caption2).foregroundColor(Brand.gold)
+                            .padding(2).background(Brand.gold.opacity(0.12))
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
@@ -1018,7 +1018,7 @@ private struct HostArtworkView: View {
     }
     private var placeholder: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
+            RoundedRectangle(cornerRadius: 8).fill(Brand.espresso.opacity(0.12))
             Image(systemName: "music.note").foregroundStyle(.secondary)
         }
     }
@@ -1379,9 +1379,9 @@ struct HostView: View {
                     if isCurrent {
                         Text("▶︎")
                             .font(.caption2)
-                            .foregroundColor(.accentColor)
+                            .foregroundColor(Brand.gold)
                             .padding(2)
-                            .background(Color.accentColor.opacity(0.1))
+                            .background(Brand.gold.opacity(0.12))
                             .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
@@ -1459,7 +1459,7 @@ struct HostView: View {
         private var placeholder: some View {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.secondary.opacity(0.15))
+                    .fill(Brand.espresso.opacity(0.12))
                 Image(systemName: "music.note")
                     .foregroundStyle(.secondary)
             }
@@ -2130,7 +2130,7 @@ private struct ArtworkThumbView: View {
     private var placeholder: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.15))
+                .fill(Brand.espresso.opacity(0.12))
             Image(systemName: "music.note")
                 .foregroundStyle(.secondary)
         }
@@ -2298,7 +2298,7 @@ private struct AdminAddSongsView: View {
 
         private var placeholder: some View {
             ZStack {
-                RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
+                RoundedRectangle(cornerRadius: 8).fill(Brand.espresso.opacity(0.12))
                 Image(systemName: "music.note").foregroundStyle(.secondary)
             }
         }
@@ -2590,7 +2590,7 @@ private struct GuestSuggestSongsView: View {
 
         private var placeholder: some View {
             ZStack {
-                RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
+                RoundedRectangle(cornerRadius: 8).fill(Brand.espresso.opacity(0.12))
                 Image(systemName: "music.note").foregroundStyle(.secondary)
             }
         }
