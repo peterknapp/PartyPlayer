@@ -94,9 +94,31 @@ struct ContentView: View {
                     }
                 }
             }
-            .sheet(isPresented: Binding(get: { !isRunningOnMac && showScanner }, set: { show in if !isRunningOnMac { showScanner = show } })) {
-                QRScannerView { code in
-                    handleScannedCode(code)
+            .sheet(isPresented: Binding(get: { !isRunningOnMac && showScanner }, set: { show in if !isRunningOnMac { showScanner = show } }), onDismiss: {
+                // Ensure consistent UI when dismissed via swipe
+                showScanner = false
+                guestHolder.guest = nil
+            }) {
+                NavigationStack {
+                    QRScannerView(onCode: { code in
+                        handleScannedCode(code)
+                        showScanner = false
+                    }, onCancel: {
+                        // Close scanner and reset guest to force initial screen
+                        showScanner = false
+                        guestHolder.guest = nil
+                    })
+                    .navigationTitle("QR scannen")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Abbrechen") {
+                                // Call the same onCancel logic
+                                showScanner = false
+                                guestHolder.guest = nil
+                            }
+                        }
+                    }
                 }
             }
             .sheet(isPresented: $pendingAdminCodeSetup) {
@@ -1689,9 +1711,6 @@ struct GuestView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            if guest.status != .admitted {
-                Button("QR scannen & beitreten") { showScanner = true }
-            }
             if guest.status == .admitted {
                 let remaining = max(0, (suggestionCooldownUntil?.timeIntervalSinceNow ?? 0))
                 let isCoolingDown = remaining > 0.5
@@ -2596,4 +2615,5 @@ private struct GuestSuggestSongsView: View {
         }
     }
 }
+
 

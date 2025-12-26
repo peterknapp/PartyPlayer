@@ -3,10 +3,12 @@ import AVFoundation
 
 struct QRScannerView: UIViewControllerRepresentable {
     var onCode: (String) -> Void
+    var onCancel: (() -> Void)? = nil
 
     func makeUIViewController(context: Context) -> ScannerVC {
         let vc = ScannerVC()
         vc.onCode = onCode
+        vc.onCancel = onCancel
         return vc
     }
 
@@ -14,6 +16,7 @@ struct QRScannerView: UIViewControllerRepresentable {
 
     final class ScannerVC: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
         var onCode: ((String) -> Void)?
+        var onCancel: (() -> Void)?
 
         private let session = AVCaptureSession()
         private let sessionQueue = DispatchQueue(label: "qr.session.queue")
