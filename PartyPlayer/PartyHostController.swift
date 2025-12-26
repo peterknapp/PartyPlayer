@@ -16,7 +16,7 @@ final class PartyHostController: ObservableObject {
     @Published var processUpOutcomes: Bool = true
     @Published var processSendToEndOutcomes: Bool = true
     @Published private(set) var removedItems: [QueueItem] = []
-    @Published private(set) var pendingSuggestions: [PendingSuggestion] = []
+    @Published private(set) var pendingSuggestions: [PendingSuggestion] = [] { didSet { savePendingSuggestions() } }
 
     private let mpc: MPCService
     // Concurrent action slots per member (e.g., 3). Each spent when a vote is accepted and restored when the per-item cooldown elapses.
@@ -54,6 +54,10 @@ final class PartyHostController: ObservableObject {
     private var pendingSkipNextSongID: String? = nil
     private var lastBoundaryAt: Date? = nil
     private var didAutoAdvanceForCurrentItem: Bool = false
+
+    private var lastSuggestionAt: [MemberID: Date] = [:]
+    private var suggestionCooldownSeconds: Int = 60
+    private let pendingSuggestionsKey = "pp_pendingSuggestions"
 
     // MARK: - Debug logging
 
@@ -134,6 +138,7 @@ final class PartyHostController: ObservableObject {
         }
         // Ensure initial cooldown is applied
         self.perItemLimiter.setCooldown(minutes: self.perItemCooldownMinutes)
+        self.loadPendingSuggestions()
     }
 
     // MARK: - Skip approval UI
@@ -145,7 +150,7 @@ final class PartyHostController: ObservableObject {
         let requestedAt: Date
     }
 
-    struct PendingSuggestion: Identifiable, Equatable {
+    struct PendingSuggestion: Identifiable, Equatable, Codable {
         let id: UUID
         let requesterID: MemberID
         let songID: String
@@ -933,6 +938,22 @@ final class PartyHostController: ObservableObject {
     }
 
     private func handleAddSongRequest(_ req: PartyMessage.AddSongRequest) {
+        // Duplicate check: ignore if songID already pending
+        if pendingSuggestions.contains(where: { $0.songID == req.songID }) {
+            DebugLog.shared.add("HOST", "suggestion ignored (duplicate songID) id=\(req.songID)")
+            return
+        }
+        // Rate limit per member
+        let now = Date()
+        if let last = lastSuggestionAt[req.memberID] {
+            let delta = now.timeIntervalSince(last)
+            if delta < TimeInterval(suggestionCooldownSeconds) {
+                DebugLog.shared.add("HOST", String(format: "suggestion ignored (rate limit %.0fs left) member=%@", TimeInterval(suggestionCooldownSeconds) - delta, req.memberID.uuidString))
+                return
+            }
+        }
+        lastSuggestionAt[req.memberID] = now
+
         let s = PendingSuggestion(
             id: UUID(),
             requesterID: req.memberID,
@@ -978,6 +999,24 @@ final class PartyHostController: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "Song nicht im Katalog gefunden."])
         }
         return song
+    }
+
+    private func savePendingSuggestions() {
+        do {
+            let data = try JSONEncoder().encode(pendingSuggestions)
+            UserDefaults.standard.set(data, forKey: pendingSuggestionsKey)
+        } catch {
+            DebugLog.shared.add("HOST", "savePendingSuggestions failed: \(error.localizedDescription)")
+        }
+    }
+    private func loadPendingSuggestions() {
+        guard let data = UserDefaults.standard.data(forKey: pendingSuggestionsKey) else { return }
+        do {
+            let arr = try JSONDecoder().decode([PendingSuggestion].self, from: data)
+            self.pendingSuggestions = arr
+        } catch {
+            DebugLog.shared.add("HOST", "loadPendingSuggestions failed: \(error.localizedDescription)")
+        }
     }
 }
 

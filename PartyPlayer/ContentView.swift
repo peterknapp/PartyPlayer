@@ -2416,10 +2416,23 @@ private struct GuestSuggestSongsView: View {
     @State private var isSearching: Bool = false
     @State private var searchTask: Task<Void, Never>? = nil
 
+    // Added states for send button lock and feedback
+    @State private var justSent: Bool = false
+    @State private var sendLocked: Bool = false
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 searchField
+                
+                if justSent {
+                    Text("Vorschlag gesendet")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal)
+                        .padding(.top, 6)
+                }
+
                 content
             }
             .navigationTitle("Song vorschlagen")
@@ -2478,7 +2491,7 @@ private struct GuestSuggestSongsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List(guest.lastSearchResults, id: \.id) { preview in
-                SuggestRow(preview: preview) {
+                SuggestRow(preview: preview, isDisabled: sendLocked, actionTitle: justSent ? "Gesendet" : "Vorschlagen") {
                     sendSuggestion(preview)
                 }
             }
@@ -2499,8 +2512,16 @@ private struct GuestSuggestSongsView: View {
     }
 
     private func sendSuggestion(_ preview: PartyMessage.MinimalSongPreview) {
+        guard !sendLocked else { return }
+        sendLocked = true
         guest.requestAddSong(songID: preview.id, preview: preview)
-        close()
+        justSent = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            // Small delay for UX to see the state change
+            close()
+            // unlock after closing to avoid reuse glitches
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { sendLocked = false; justSent = false }
+        }
     }
 
     private func close() {
@@ -2511,6 +2532,8 @@ private struct GuestSuggestSongsView: View {
     // MARK: - Row
     private struct SuggestRow: View {
         let preview: PartyMessage.MinimalSongPreview
+        let isDisabled: Bool
+        let actionTitle: String
         let onTap: () -> Void
 
         var body: some View {
@@ -2534,8 +2557,9 @@ private struct GuestSuggestSongsView: View {
                 }
 
                 Spacer()
-                Button("Vorschlagen") { onTap() }
+                Button(actionTitle) { onTap() }
                     .buttonStyle(.bordered)
+                    .disabled(isDisabled)
             }
             .contentShape(Rectangle())
             .onTapGesture { onTap() }
