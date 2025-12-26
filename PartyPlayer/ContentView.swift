@@ -246,7 +246,7 @@ private struct HostTabsView: View {
     @State private var showInbox: Bool = false
 
     var badgeCount: Int {
-        host.pendingVoteOutcomes.count + host.pendingSkipRequests.count
+        host.pendingVoteOutcomes.count + host.pendingSkipRequests.count + host.pendingSuggestions.count
     }
 
     var body: some View {
@@ -733,6 +733,39 @@ private struct HostPendingApprovalsPanel: View {
         case .promoteNext: return "Hinter Now Playing verschieben"
         case .removeFromQueue: return "Aus Playlist entfernen"
         case .sendToEnd: return "Ans Ende verschieben"
+        }
+    }
+}
+
+// Inserted new panel here as per instruction
+
+private struct HostPendingSuggestionsPanel: View {
+    @ObservedObject var host: PartyHostController
+    var body: some View {
+        Group {
+            if host.pendingSuggestions.isEmpty { EmptyView() } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Song-Vorschläge").font(.headline)
+                    ForEach(host.pendingSuggestions) { s in
+                        let requester = host.state.members.first(where: { $0.id == s.requesterID })?.displayName ?? "Gast"
+                        HStack(spacing: 12) {
+                            HostArtworkView(urlString: s.artworkURL, size: 44)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(s.title ?? "Unbekannter Titel").font(.subheadline).lineLimit(1)
+                                Text(s.artist ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                Text(requester).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Ablehnen") { host.rejectSuggestion(id: s.id) }.buttonStyle(.bordered)
+                            Button("Genehmigen") { host.approveSuggestion(id: s.id) }.buttonStyle(.borderedProminent)
+                        }
+                        .padding(10)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 }
@@ -2349,6 +2382,7 @@ private struct AdminInboxView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
+                    HostPendingSuggestionsPanel(host: host)
                     HostPendingApprovalsPanel(host: host)
                     HostSkipRequestsPanel(host: host)
                     HostRemovedItemsPanel(host: host)
