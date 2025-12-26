@@ -21,6 +21,9 @@ final class PartyGuestController: ObservableObject {
     @Published private(set) var lastSnapshotAt: Date = Date()
     @Published private(set) var remainingActionSlots: Int = 3
 
+    @Published private(set) var lastSearchResults: [PartyMessage.MinimalSongPreview] = []
+    @Published private(set) var lastSearchRequestID: UUID? = nil
+
     let memberID: MemberID = DeviceIdentity.memberID()
 
     private let mpc: MPCService
@@ -287,6 +290,9 @@ final class PartyGuestController: ObservableObject {
 //                    "GUEST",
 //                    "nowPlaying '\(np.title ?? "-")' – '\(np.artist ?? "-")' playing=\(np.isPlaying) pos=\(Int(np.positionSeconds))s"
 //                )
+            case .searchResults(let res):
+                self.lastSearchResults = res.results
+                self.lastSearchRequestID = res.requestID
                 
             default:
                 break
@@ -329,6 +335,27 @@ final class PartyGuestController: ObservableObject {
         mpc.stopBrowsing()
         try? await Task.sleep(nanoseconds: 200_000_000)
         mpc.startBrowsing()
+    }
+
+    // MARK: - Host-gestützte Suche
+
+    func requestHostSearch(term: String) {
+        let reqID = UUID()
+        self.lastSearchRequestID = reqID
+        self.lastSearchResults = []
+        let msg = PartyMessage.searchRequest(.init(requestID: reqID, term: term, memberID: memberID))
+        Task {
+            guard let peer = targetPeer else { return }
+            await send(msg, to: peer)
+        }
+    }
+
+    func requestAddSong(songID: String, preview: PartyMessage.MinimalSongPreview?) {
+        let msg = PartyMessage.addSongRequest(.init(memberID: memberID, songID: songID, preview: preview, requestedAt: Date()))
+        Task {
+            guard let peer = targetPeer else { return }
+            await send(msg, to: peer)
+        }
     }
 }
 

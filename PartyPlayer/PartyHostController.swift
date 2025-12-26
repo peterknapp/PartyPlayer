@@ -16,6 +16,7 @@ final class PartyHostController: ObservableObject {
     @Published var processUpOutcomes: Bool = true
     @Published var processSendToEndOutcomes: Bool = true
     @Published private(set) var removedItems: [QueueItem] = []
+    @Published private(set) var pendingSuggestions: [PendingSuggestion] = []
 
     private let mpc: MPCService
     // Concurrent action slots per member (e.g., 3). Each spent when a vote is accepted and restored when the per-item cooldown elapses.
@@ -141,6 +142,16 @@ final class PartyHostController: ObservableObject {
         let id: UUID
         let itemID: UUID
         let memberID: MemberID
+        let requestedAt: Date
+    }
+
+    struct PendingSuggestion: Identifiable, Equatable {
+        let id: UUID
+        let requesterID: MemberID
+        let songID: String
+        let title: String?
+        let artist: String?
+        let artworkURL: String?
         let requestedAt: Date
     }
 
@@ -431,6 +442,10 @@ final class PartyHostController: ObservableObject {
                 handleVote(vote)
             case .skipRequest(let req):
                 handleSkipRequest(req)
+            case .searchRequest(let req):
+                await handleSearchRequest(req, from: peer)
+            case .addSongRequest(let req):
+                handleAddSongRequest(req)
             default:
                 break
             }
@@ -901,6 +916,68 @@ final class PartyHostController: ObservableObject {
 
     func rejectSkipRequest(itemID: UUID, memberID: MemberID) {
         pendingSkipRequests.removeAll { $0.itemID == itemID && $0.memberID == memberID }
+    }
+
+    // MARK: - New: Song Suggestion Handling
+    private func handleSearchRequest(_ req: PartyMessage.SearchRequest, from peer: MCPeerID) async {
+        let songs = try? await self.searchCatalogSongs(term: req.term, limit: 25)
+        let previews = (songs ?? []).map { s in
+            PartyMessage.MinimalSongPreview(
+                id: s.id.rawValue,
+                title: s.title,
+                artist: s.artistName,
+                artworkURL: s.artwork?.url(width: 200, height: 200)?.absoluteString
+            )
+        }
+        await send(.searchResults(.init(requestID: req.requestID, results: previews)), to: peer)
+    }
+
+    private func handleAddSongRequest(_ req: PartyMessage.AddSongRequest) {
+        let s = PendingSuggestion(
+            id: UUID(),
+            requesterID: req.memberID,
+            songID: req.songID,
+            title: req.preview?.title,
+            artist: req.preview?.artist,
+            artworkURL: req.preview?.artworkURL,
+            requestedAt: req.requestedAt
+        )
+        pendingSuggestions.insert(s, at: 0)
+        broadcastSnapshot()
+    }
+
+    func approveSuggestion(id: UUID) {
+        Task { @MainActor in
+            guard let s = pendingSuggestions.first(where: { $0.id == id }) else { return }
+            do {
+                let song = try await fetchSongByID(s.songID)
+                self.adminAppendSongs([song])
+                self.pendingSuggestions.removeAll { $0.id == id }
+                self.broadcastSnapshot()
+            } catch {
+                DebugLog.shared.add("HOST", "approveSuggestion failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func rejectSuggestion(id: UUID) {
+        pendingSuggestions.removeAll { $0.id == id }
+    }
+
+    private func fetchSongByID(_ id: String) async throws -> Song {
+        await self.playback.requestAuthorization()
+        guard self.playback.isAuthorized else {
+            throw NSError(domain: "PartyHostController", code: 11,
+                          userInfo: [NSLocalizedDescriptionKey: "Music-Autorisierung fehlt. Bitte in der Musik-App anmelden und Zugriff erlauben."])
+        }
+        let ids = [MusicItemID(id)]
+        let req = MusicCatalogResourceRequest<Song>(matching: \.id, memberOf: ids)
+        let resp = try await req.response()
+        guard let song = resp.items.first(where: { $0.id == ids[0] }) else {
+            throw NSError(domain: "PartyHostController", code: 12,
+                          userInfo: [NSLocalizedDescriptionKey: "Song nicht im Katalog gefunden."])
+        }
+        return song
     }
 }
 

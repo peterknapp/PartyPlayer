@@ -10,6 +10,9 @@ enum PartyMessage: Codable {
     case vote(VoteMessage)
     case skipRequest(SkipRequest)
     case nowPlaying(NowPlayingPayload)
+    case searchRequest(SearchRequest)
+    case searchResults(SearchResults)
+    case addSongRequest(AddSongRequest)
 
     struct Hello: Codable {
         var role: PartyRole
@@ -69,7 +72,33 @@ enum PartyMessage: Codable {
         var isPlaying: Bool
         var positionSeconds: Double
         var sentAt: Date
-    }}
+    }
+    
+    struct MinimalSongPreview: Codable, Identifiable, Equatable {
+        var id: String
+        var title: String
+        var artist: String
+        var artworkURL: String?
+    }
+    
+    struct SearchRequest: Codable {
+        var requestID: UUID
+        var term: String
+        var memberID: MemberID
+    }
+    
+    struct SearchResults: Codable {
+        var requestID: UUID
+        var results: [MinimalSongPreview]
+    }
+    
+    struct AddSongRequest: Codable {
+        var memberID: MemberID
+        var songID: String
+        var preview: MinimalSongPreview?
+        var requestedAt: Date
+    }
+}
 
 final class PartyCodec {
     static func encode(_ msg: PartyMessage) throws -> Data {

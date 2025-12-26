@@ -1651,17 +1651,15 @@ struct GuestView: View {
     @Binding var showScanner: Bool
 
     @State private var tick: Int = 0
+    @State private var showSuggestSongs: Bool = false
 
     var body: some View {
         VStack(spacing: 12) {
             if guest.status != .admitted {
                 Button("QR scannen & beitreten") { showScanner = true }
             }
-
-            Text(statusText)
-                .font(.headline)
-            
             if guest.status == .admitted {
+                Button("Song vorschlagen") { showSuggestSongs = true }
                 Text("Aktionen verfügbar: \(guest.remainingActionSlots)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1680,6 +1678,11 @@ struct GuestView: View {
         .onReceive(Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()) { _ in
             if guest.status == .admitted {
                 tick &+= 1
+            }
+        }
+        .sheet(isPresented: $showSuggestSongs) {
+            GuestSuggestSongsView(guest: guest) {
+                showSuggestSongs = false
             }
         }
     }
@@ -2366,6 +2369,150 @@ private struct AdminInboxView: View {
     private func close() {
         dismiss()
         onDone()
+    }
+}
+
+// New View Added as per instructions
+private struct GuestSuggestSongsView: View {
+    @ObservedObject var guest: PartyGuestController
+    var onClose: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var searchText: String = ""
+    @State private var isSearching: Bool = false
+    @State private var searchTask: Task<Void, Never>? = nil
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                searchField
+                content
+            }
+            .navigationTitle("Song vorschlagen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Abbrechen") { close() }
+                }
+            }
+        }
+        .onDisappear { searchTask?.cancel() }
+        .onChange(of: guest.lastSearchResults) { _, _ in
+            // Ergebnisse vom Host angekommen -> Suche beendet anzeigen
+            isSearching = false
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Titel, Künstler…", text: $searchText)
+                .textFieldStyle(.plain)
+                .onChange(of: searchText) { _, newValue in scheduleSearch(for: newValue) }
+            if !searchText.isEmpty {
+                Button(action: { searchText = "" }) {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(10)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding([.horizontal, .top])
+    }
+
+    @ViewBuilder private var content: some View {
+        if isSearching {
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Suche…").foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if searchText.isEmpty {
+            VStack(spacing: 8) {
+                Text("Gib einen Suchbegriff ein, um Songs vorzuschlagen.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if guest.lastSearchResults.isEmpty {
+            VStack(spacing: 8) {
+                Text("Keine Treffer.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List(guest.lastSearchResults, id: \.id) { preview in
+                SuggestRow(preview: preview) {
+                    sendSuggestion(preview)
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+    }
+
+    private func scheduleSearch(for term: String) {
+        searchTask?.cancel()
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { isSearching = false; return }
+        isSearching = true
+        searchTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            guest.requestHostSearch(term: trimmed)
+        }
+    }
+
+    private func sendSuggestion(_ preview: PartyMessage.MinimalSongPreview) {
+        guest.requestAddSong(songID: preview.id, preview: preview)
+        close()
+    }
+
+    private func close() {
+        dismiss()
+        onClose()
+    }
+
+    // MARK: - Row
+    private struct SuggestRow: View {
+        let preview: PartyMessage.MinimalSongPreview
+        let onTap: () -> Void
+
+        var body: some View {
+            HStack(spacing: 12) {
+                if let urlString = preview.artworkURL, let url = URL(string: urlString) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let image): image.resizable().scaledToFill()
+                        default: placeholder
+                        }
+                    }
+                    .frame(width: 44, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    placeholder.frame(width: 44, height: 44).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(preview.title).font(.headline).lineLimit(1)
+                    Text(preview.artist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+
+                Spacer()
+                Button("Vorschlagen") { onTap() }
+                    .buttonStyle(.bordered)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { onTap() }
+        }
+
+        private var placeholder: some View {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.15))
+                Image(systemName: "music.note").foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
