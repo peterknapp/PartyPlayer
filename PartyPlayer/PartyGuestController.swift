@@ -20,6 +20,7 @@ final class PartyGuestController: ObservableObject {
     @Published private(set) var itemCooldowns: [UUID: Double] = [:]
     @Published private(set) var lastSnapshotAt: Date = Date()
     @Published private(set) var remainingActionSlots: Int = 3
+    @Published private(set) var suggestionCooldownSeconds: Int = 60
 
     @Published private(set) var lastSearchResults: [PartyMessage.MinimalSongPreview] = []
     @Published private(set) var lastSearchRequestID: UUID? = nil
@@ -283,6 +284,7 @@ final class PartyGuestController: ObservableObject {
                 lastSnapshotAt = Date()
 
                 if let slots = snap.remainingActionSlots { self.remainingActionSlots = slots }
+                if let sc = snap.suggestionCooldownSeconds { self.suggestionCooldownSeconds = sc }
                 
             case .nowPlaying(let np):
                 self.nowPlaying = np

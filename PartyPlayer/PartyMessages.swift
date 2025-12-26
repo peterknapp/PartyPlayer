@@ -41,6 +41,7 @@ enum PartyMessage: Codable {
         var cooldowns: [UUID: Double]? = nil
         // Optional: remaining concurrent action slots for the requesting member
         var remainingActionSlots: Int? = nil
+        var suggestionCooldownSeconds: Int? = nil
     }
 
     enum VoteDirection: String, Codable { case up, down }

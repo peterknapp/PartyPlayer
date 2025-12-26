@@ -25,6 +25,7 @@ final class PartyHostController: ObservableObject {
 
     private var perItemLimiter = PerItemVoteLimiter()
     @Published var perItemCooldownMinutes: Int = 1 { didSet { perItemLimiter.setCooldown(minutes: perItemCooldownMinutes) } }
+    @Published var suggestionCooldownSeconds: Int = 60
     private let locationService: LocationService
     private let playback = HostPlaybackController()
     private let playlist = PlaylistEngine()
@@ -56,7 +57,6 @@ final class PartyHostController: ObservableObject {
     private var didAutoAdvanceForCurrentItem: Bool = false
 
     private var lastSuggestionAt: [MemberID: Date] = [:]
-    private var suggestionCooldownSeconds: Int = 60
     private let pendingSuggestionsKey = "pp_pendingSuggestions"
 
     // MARK: - Debug logging
@@ -862,11 +862,11 @@ final class PartyHostController: ObservableObject {
                             cooldowns[item.id] = max(0, remaining)
                         }
                     }
-                    let snap = PartyMessage.StateSnapshot(state: state, cooldowns: cooldowns, remainingActionSlots: remainingSlots(for: memberID))
+                    let snap = PartyMessage.StateSnapshot(state: state, cooldowns: cooldowns, remainingActionSlots: remainingSlots(for: memberID), suggestionCooldownSeconds: self.suggestionCooldownSeconds)
                     await send(.stateSnapshot(snap), to: peer)
                 }
             } else {
-                await send(.stateSnapshot(.init(state: state)))
+                await send(.stateSnapshot(.init(state: state, suggestionCooldownSeconds: self.suggestionCooldownSeconds)))
             }
         }
     }
@@ -947,8 +947,8 @@ final class PartyHostController: ObservableObject {
         let now = Date()
         if let last = lastSuggestionAt[req.memberID] {
             let delta = now.timeIntervalSince(last)
-            if delta < TimeInterval(suggestionCooldownSeconds) {
-                DebugLog.shared.add("HOST", String(format: "suggestion ignored (rate limit %.0fs left) member=%@", TimeInterval(suggestionCooldownSeconds) - delta, req.memberID.uuidString))
+            if delta < TimeInterval(self.suggestionCooldownSeconds) {
+                DebugLog.shared.add("HOST", String(format: "suggestion ignored (rate limit %.0fs left) member=%@", TimeInterval(self.suggestionCooldownSeconds) - delta, req.memberID.uuidString))
                 return
             }
         }

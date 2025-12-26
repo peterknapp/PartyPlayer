@@ -1685,6 +1685,7 @@ struct GuestView: View {
 
     @State private var tick: Int = 0
     @State private var showSuggestSongs: Bool = false
+    @State private var suggestionCooldownUntil: Date? = nil
 
     var body: some View {
         VStack(spacing: 12) {
@@ -1692,7 +1693,15 @@ struct GuestView: View {
                 Button("QR scannen & beitreten") { showScanner = true }
             }
             if guest.status == .admitted {
+                let remaining = max(0, (suggestionCooldownUntil?.timeIntervalSinceNow ?? 0))
+                let isCoolingDown = remaining > 0.5
                 Button("Song vorschlagen") { showSuggestSongs = true }
+                    .disabled(isCoolingDown)
+                if isCoolingDown {
+                    Text("Cooldown: \(shortCooldownString(remaining))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Text("Aktionen verfügbar: \(guest.remainingActionSlots)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1714,9 +1723,11 @@ struct GuestView: View {
             }
         }
         .sheet(isPresented: $showSuggestSongs) {
-            GuestSuggestSongsView(guest: guest) {
+            GuestSuggestSongsView(guest: guest, onClose: {
                 showSuggestSongs = false
-            }
+            }, onSent: {
+                suggestionCooldownUntil = Date().addingTimeInterval(TimeInterval(guest.suggestionCooldownSeconds))
+            })
         }
     }
 
@@ -2351,6 +2362,17 @@ private struct AdminSettingsView: View {
                         }
                     }
                 }
+                
+                Section("Vorschläge") {
+                    Stepper(value: $host.suggestionCooldownSeconds, in: 0...600, step: 10) {
+                        HStack {
+                            Text("Vorschlag-Sperre (Sek.)")
+                            Spacer()
+                            Text("\(host.suggestionCooldownSeconds)s")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
             .navigationTitle("Einstellungen")
             .navigationBarTitleDisplayMode(.inline)
@@ -2364,6 +2386,7 @@ private struct AdminSettingsView: View {
             .onChange(of: host.voteThresholdPercent) { _, _ in onInteraction() }
             .onChange(of: host.maxConcurrentActions) { _, _ in onInteraction() }
             .onChange(of: adminAutoLockSeconds) { _, _ in onInteraction() }
+            .onChange(of: host.suggestionCooldownSeconds) { _, _ in onInteraction() }
         }
     }
 
@@ -2410,6 +2433,7 @@ private struct AdminInboxView: View {
 private struct GuestSuggestSongsView: View {
     @ObservedObject var guest: PartyGuestController
     var onClose: () -> Void
+    var onSent: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
     @State private var searchText: String = ""
@@ -2516,10 +2540,9 @@ private struct GuestSuggestSongsView: View {
         sendLocked = true
         guest.requestAddSong(songID: preview.id, preview: preview)
         justSent = true
+        onSent()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            // Small delay for UX to see the state change
             close()
-            // unlock after closing to avoid reuse glitches
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { sendLocked = false; justSent = false }
         }
     }
