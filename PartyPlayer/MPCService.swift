@@ -63,6 +63,10 @@ final class MPCService: NSObject, ObservableObject {
         guard !targets.isEmpty else { return }
         try session.send(data, toPeers: targets, with: .reliable)
     }
+    
+    func disconnect() {
+        session.disconnect()
+    }
 }
 
 extension MPCService: MCSessionDelegate {

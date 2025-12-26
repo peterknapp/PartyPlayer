@@ -22,6 +22,7 @@ struct ContentView: View {
     @StateObject private var guestHolder = GuestHolder()
 
     @State private var showScanner = false
+    @State private var didScanSuccessfully: Bool = false
 
     @State private var adminCode: String? = nil
     @State private var pendingAdminCodeSetup: Bool = false
@@ -94,17 +95,25 @@ struct ContentView: View {
                     }
                 }
             }
-            .sheet(isPresented: Binding(get: { !isRunningOnMac && showScanner }, set: { show in if !isRunningOnMac { showScanner = show } }), onDismiss: {
-                // Ensure consistent UI when dismissed via swipe
-                showScanner = false
-                guestHolder.guest = nil
-            }) {
+            .sheet(
+                isPresented: Binding(get: { !isRunningOnMac && showScanner }, set: { show in if !isRunningOnMac { showScanner = show } }),
+                onDismiss: {
+                    // If the sheet was dismissed without a successful scan, reset guest to return to start
+                    if !didScanSuccessfully {
+                        guestHolder.guest = nil
+                    }
+                    // Always ensure scanner flag is false and reset the marker
+                    showScanner = false
+                    didScanSuccessfully = false
+                }
+            ) {
                 NavigationStack {
                     QRScannerView(onCode: { code in
+                        didScanSuccessfully = true
                         handleScannedCode(code)
                         showScanner = false
                     }, onCancel: {
-                        // Close scanner and reset guest to force initial screen
+                        // Explicit cancel: close and reset guest to initial screen
                         showScanner = false
                         guestHolder.guest = nil
                     })
@@ -174,6 +183,9 @@ struct ContentView: View {
             .onAppear {
                 locationService.requestWhenInUse()
                 locationService.start()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("GuestDidLeave"))) { _ in
+                guestHolder.guest = nil
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -373,7 +385,7 @@ private struct HostTabsView: View {
                         .frame(maxWidth: 280, maxHeight: 280)
                 }
 
-                Text("Gäste: \(host.state.members.count)")
+                Text("Gäste: \(host.state.members.filter { $0.isAdmitted }.count)")
                     .font(.headline)
             }
             .padding()
@@ -435,7 +447,7 @@ private struct HostTabsView: View {
         VStack(spacing: 0) {
             // Header + Controls (keine ScrollView, damit die Liste den Rest füllt)
             VStack(spacing: 16) {
-                Text("Gäste: \(host.state.members.count)")
+                Text("Gäste: \(host.state.members.filter { $0.isAdmitted }.count)")
                     .font(.headline)
 
                 HStack(spacing: 16) {
@@ -1070,7 +1082,7 @@ struct HostView: View {
             Text("Session: \(host.state.sessionID)")
             Text("Join-Code: \(host.joinCode)")
             QRCodeView(text: "PP|\(host.state.sessionID)|\(host.joinCode)")
-            Text("Gäste: \(host.state.members.count)")
+            Text("Gäste: \(host.state.members.filter { $0.isAdmitted }.count)")
                 .font(.headline)
         }
     }
@@ -1708,6 +1720,7 @@ struct GuestView: View {
     @State private var tick: Int = 0
     @State private var showSuggestSongs: Bool = false
     @State private var suggestionCooldownUntil: Date? = nil
+    @State private var showLeaveConfirm: Bool = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -1724,6 +1737,14 @@ struct GuestView: View {
                 Text("Aktionen verfügbar: \(guest.remainingActionSlots)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if guest.status == .admitted {
+                Button("Verlassen") {
+                    showLeaveConfirm = true
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
             }
 
             if let state = guest.state {
@@ -1747,6 +1768,17 @@ struct GuestView: View {
             }, onSent: {
                 suggestionCooldownUntil = Date().addingTimeInterval(TimeInterval(guest.suggestionCooldownSeconds))
             })
+        }
+        .alert("Bist du sicher?", isPresented: $showLeaveConfirm) {
+            Button("Abbrechen", role: .cancel) { }
+            Button("OK") {
+                guest.leave()
+                showSuggestSongs = false
+                suggestionCooldownUntil = nil
+                NotificationCenter.default.post(name: Notification.Name("GuestDidLeave"), object: nil)
+            }
+        } message: {
+            Text("Möchtest du die Party verlassen?")
         }
     }
 

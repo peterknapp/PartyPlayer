@@ -359,5 +359,37 @@ final class PartyGuestController: ObservableObject {
             await send(msg, to: peer)
         }
     }
+    
+    func leave() {
+        // Cancel timers/tasks
+        joinTimeoutTask?.cancel()
+        joinTimeoutTask = nil
+
+        // Stop discovery/connection attempts
+        mpc.stopBrowsing()
+        mpc.disconnect()
+
+        // Reset transient state
+        state = nil
+        nowPlaying = nil
+        itemCooldowns = [:]
+        lastSnapshotAt = Date()
+        remainingActionSlots = 3
+        lastSearchResults = []
+        lastSearchRequestID = nil
+
+        // Reset connection/session info
+        targetPeer = nil
+        didSendJoin = false
+        sessionID = nil
+        joinCode = nil
+        retryCount = 0
+
+        // Stop location updates for guest
+        locationService.stop()
+
+        // Back to idle
+        status = .idle
+    }
 }
 

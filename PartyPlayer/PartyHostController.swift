@@ -136,6 +136,18 @@ final class PartyHostController: ObservableObject {
         self.mpc.onData = { [weak self] data, peer in
             Task { await self?.handleIncoming(data: data, from: peer) }
         }
+        self.mpc.onPeerState = { [weak self] peer, st in
+            guard let self else { return }
+            // If a connected peer disconnects, mark member as not admitted and broadcast
+            if st == .notConnected {
+                if let member = self.peerToMember[peer], let idx = self.state.members.firstIndex(where: { $0.id == member }) {
+                    self.state.members[idx].isAdmitted = false
+                    self.state.members[idx].lastSeen = Date()
+                    self.peerToMember.removeValue(forKey: peer)
+                    self.broadcastSnapshot()
+                }
+            }
+        }
         // Ensure initial cooldown is applied
         self.perItemLimiter.setCooldown(minutes: self.perItemCooldownMinutes)
         self.loadPendingSuggestions()
