@@ -125,4 +125,11 @@ actor PlaylistEngine {
         items.insert(contentsOf: moving, at: target)
         // cursorIndex remains valid: we only moved items at or after `base`
     }
+
+    /// Set the current cursor to the item with the given ID, if it exists.
+    func setCurrent(toItemID id: UUID) {
+        if let idx = items.firstIndex(where: { $0.id == id }) {
+            cursorIndex = idx
+        }
+    }
 }

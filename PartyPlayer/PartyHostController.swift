@@ -30,6 +30,8 @@ final class PartyHostController: ObservableObject {
     private let playback = HostPlaybackController()
     private let playlist = PlaylistEngine()
 
+    private let mirrorWindowSize: Int = 5
+
     enum VotingMode: String, Codable { case automatic, hostApproval }
     @Published var votingMode: VotingMode = .automatic
 
@@ -254,13 +256,8 @@ final class PartyHostController: ObservableObject {
         Task { @MainActor in
             if let next = await playlist.next() {
                 state.nowPlayingItemID = next.id
-                do {
-                    try await playback.setQueue(withCatalogSongIDs: [next.songID])
-                    try await playback.play()
-                } catch {
-                    DebugLog.shared.add("HOST", "advanceToNextAndPlay failed: \(error.localizedDescription)")
-                }
-                didAutoAdvanceForCurrentItem = false
+                // Rebuild the player window starting at the new current item and keep playback state
+                await rebuildPlayerQueuePreservingCurrent()
                 broadcastSnapshot()
             } else {
                 // End of playlist
@@ -385,13 +382,15 @@ final class PartyHostController: ObservableObject {
             // If nothing was current, set current and prepare the player queue (do not auto-play)
             if self.state.nowPlayingItemID == nil, let current = await self.playlist.current() {
                 self.state.nowPlayingItemID = current.id
-                do {
-                    try await self.playback.setQueue(withCatalogSongIDs: [current.songID])
-                } catch {
-                    DebugLog.shared.add("HOST", "prepare player after append failed: \(error.localizedDescription)")
-                }
+                await self.rebuildPlayerQueuePreservingCurrent()
             }
-
+            
+            // Removed the previous block that conditionally called rebuildPlayerQueuePreservingCurrent()
+            /*
+            if self.state.nowPlayingItemID != nil {
+                await self.rebuildPlayerQueuePreservingCurrent()
+            }
+            */
             self.broadcastSnapshot()
         }
     }
@@ -407,6 +406,12 @@ final class PartyHostController: ObservableObject {
             } else {
                 self.state.nowPlayingItemID = nil
             }
+            // Removed the block calling rebuildPlayerQueuePreservingCurrent()
+            /*
+            if self.state.nowPlayingItemID != nil {
+                await self.rebuildPlayerQueuePreservingCurrent()
+            }
+            */
             self.broadcastSnapshot()
         }
     }
@@ -742,21 +747,20 @@ final class PartyHostController: ObservableObject {
                 // If current was removed, advance and play next
                 if let next = await playlist.current() {
                     state.nowPlayingItemID = next.id
-                    do {
-                        try await playback.setQueue(withCatalogSongIDs: [next.songID])
-                        try await playback.play()
-                    } catch {
-                        DebugLog.shared.add("HOST", "adminRemove current -> play failed: \(error.localizedDescription)")
-                    }
-                    didAutoAdvanceForCurrentItem = false
+                    await self.rebuildPlayerQueuePreservingCurrent()
                 } else {
-                    // Playlist empty
                     state.nowPlayingItemID = nil
                 }
             } else {
                 // Keep nowPlayingItemID if still in list
                 if let current = await playlist.current() {
                     state.nowPlayingItemID = current.id
+                    // Removed the block calling rebuildPlayerQueuePreservingCurrent()
+                    /*
+                    if self.state.nowPlayingItemID != nil {
+                        await self.rebuildPlayerQueuePreservingCurrent()
+                    }
+                    */
                 } else {
                     state.nowPlayingItemID = nil
                 }
@@ -813,6 +817,12 @@ final class PartyHostController: ObservableObject {
             // Keep or set nowPlaying appropriately
             if let current = await playlist.current() {
                 state.nowPlayingItemID = current.id
+                // Removed the block calling rebuildPlayerQueuePreservingCurrent()
+                /*
+                if self.state.nowPlayingItemID != nil {
+                    await self.rebuildPlayerQueuePreservingCurrent()
+                }
+                */
             } else {
                 state.nowPlayingItemID = nil
             }
@@ -854,8 +864,54 @@ final class PartyHostController: ObservableObject {
     /// Rebuild the underlying MusicKit player queue to reflect the current logical state.queue.
     /// Places the current logical nowPlaying item (if any) at the front so playback continues from there.
     private func rebuildPlayerQueuePreservingCurrent() async {
-        DebugLog.shared.add("REWRITE", "rebuildPlayerQueuePreservingCurrent called - disabled")
-        broadcastSnapshot()
+        DebugLog.shared.add("MIRROR", "rebuild start")
+        // 1) Snapshot of logical playlist
+        let snapshot = await playlist.itemsSnapshot()
+        guard !snapshot.isEmpty else {
+            DebugLog.shared.add("MIRROR", "empty snapshot – nothing to mirror")
+            return
+        }
+
+        // 2) Determine current index; if missing, initialize to first
+        guard let currentID = state.nowPlayingItemID,
+              let currentIdx = snapshot.firstIndex(where: { $0.id == currentID }) else {
+            if let first = snapshot.first {
+                state.nowPlayingItemID = first.id
+                await playlist.setCurrent(toItemID: first.id)
+                // re-enter now that current is valid
+                await rebuildPlayerQueuePreservingCurrent()
+            }
+            return
+        }
+
+        // 3) Build 5-track window (or less if near the end)
+        let end = min(snapshot.count, currentIdx + mirrorWindowSize)
+        let window = Array(snapshot[currentIdx..<end])
+        let ids = window.map { $0.songID }
+
+        // 4) Capture playback state
+        let wasPlaying = playback.isPlaying
+        let prevSongID = playback.currentSongID
+        let prevTime = playback.currentTime
+
+        do {
+            // 5) Set player queue to the window
+            try await playback.setQueue(withCatalogSongIDs: ids)
+
+            // 6) Restore position if still on the same track
+            if let first = ids.first, prevSongID == first, prevTime > 0.5 {
+                playback.seek(to: prevTime)
+            }
+
+            // 7) Resume playback if it was playing before
+            if wasPlaying {
+                try await playback.play()
+            }
+
+            DebugLog.shared.add("MIRROR", "rebuild ok window=\(ids.count) wasPlaying=\(wasPlaying)")
+        } catch {
+            DebugLog.shared.add("MIRROR", "rebuild failed: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Snapshot / send helpers
