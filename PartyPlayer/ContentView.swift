@@ -2494,6 +2494,7 @@ private struct GuestSuggestSongsView: View {
     // Added states for send button lock and feedback
     @State private var justSent: Bool = false
     @State private var sendLocked: Bool = false
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -2512,10 +2513,12 @@ private struct GuestSuggestSongsView: View {
             }
             .navigationTitle("Song vorschlagen")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Abbrechen") { close() }
-                }
+        }
+        .onAppear {
+            // Give the view a moment to present before focusing to ensure keyboard appears
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                isSearchFocused = true
             }
         }
         .onDisappear { searchTask?.cancel() }
@@ -2530,6 +2533,7 @@ private struct GuestSuggestSongsView: View {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Titel, Künstler…", text: $searchText)
                 .textFieldStyle(.plain)
+                .focused($isSearchFocused)
                 .onChange(of: searchText) { _, newValue in scheduleSearch(for: newValue) }
             if !searchText.isEmpty {
                 Button(action: { searchText = "" }) {
@@ -2647,5 +2651,4 @@ private struct GuestSuggestSongsView: View {
         }
     }
 }
-
 

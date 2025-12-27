@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 struct GuestLocalState: Codable, Equatable {
     // Join context
@@ -12,6 +13,10 @@ struct GuestLocalState: Codable, Equatable {
     var sendUpVotesEnabled: Bool
     var sendDownVotesEnabled: Bool
 
+    // Last known cooldowns from the host (itemID -> remaining seconds) and their snapshot timestamp
+    var lastKnownCooldowns: [UUID: Double] = [:]
+    var cooldownsSnapshotAt: Date? = nil
+
     static let empty = GuestLocalState(
         lastSessionID: nil,
         lastJoinCode: nil,
@@ -19,7 +24,9 @@ struct GuestLocalState: Codable, Equatable {
         displayName: "",
         hasAppleMusic: false,
         sendUpVotesEnabled: true,
-        sendDownVotesEnabled: true
+        sendDownVotesEnabled: true,
+        lastKnownCooldowns: [:],
+        cooldownsSnapshotAt: nil
     )
 }
 

@@ -29,11 +29,12 @@ final class PartyGuestController: ObservableObject {
 
     private let mpc: MPCService
     private let locationService: LocationService
+    private let localStore = GuestLocalStateStore()
     
     private let defaults = UserDefaults.standard
-    private let lastSessionKey = "pp_lastSessionID"
-    private let lastJoinCodeKey = "pp_lastJoinCode"
-    private let lastAdmittedAtKey = "pp_lastAdmittedAt"
+    private let lastSessionKey = "pp_lastSessionID" // migration only
+    private let lastJoinCodeKey = "pp_lastJoinCode" // migration only
+    private let lastAdmittedAtKey = "pp_lastAdmittedAt" // migration only
 
     private var joinAttemptID = UUID()
     private var joinTimeoutTask: Task<Void, Never>?
@@ -47,8 +48,8 @@ final class PartyGuestController: ObservableObject {
 
     private var targetPeer: MCPeerID?
     private var didSendJoin: Bool = false
-    @Published var sendUpVotesEnabled: Bool = true
-    @Published var sendDownVotesEnabled: Bool = true
+    @Published var sendUpVotesEnabled: Bool = true { didSet { localStore.state.sendUpVotesEnabled = sendUpVotesEnabled } }
+    @Published var sendDownVotesEnabled: Bool = true { didSet { localStore.state.sendDownVotesEnabled = sendDownVotesEnabled } }
     private var pendingVoteTasks: [UUID: Task<Void, Never>] = [:]
     private var lastVoteTapAt: [UUID: Date] = [:]
 
@@ -57,7 +58,20 @@ final class PartyGuestController: ObservableObject {
         self.hasAppleMusic = hasAppleMusic
         self.locationService = locationService
 
-        self.mpc = MPCService(displayName: "GUEST-\(displayName)")
+        // Load persisted preferences
+        if !localStore.state.displayName.isEmpty {
+            self.displayName = localStore.state.displayName
+        } else {
+            localStore.state.displayName = displayName
+        }
+        self.hasAppleMusic = localStore.state.hasAppleMusic || hasAppleMusic
+        if localStore.state.hasAppleMusic != self.hasAppleMusic {
+            localStore.state.hasAppleMusic = self.hasAppleMusic
+        }
+        self.sendUpVotesEnabled = localStore.state.sendUpVotesEnabled
+        self.sendDownVotesEnabled = localStore.state.sendDownVotesEnabled
+
+        self.mpc = MPCService(displayName: "GUEST-\(self.displayName)")
 
         self.mpc.onData = { [weak self] data, peer in
             Task { await self?.handleIncoming(data: data, from: peer) }
@@ -106,6 +120,8 @@ final class PartyGuestController: ObservableObject {
                 break
             }
         }
+        // Migrate legacy keys into the consolidated local store (one-time)
+        migrateLegacyKeysIfNeeded()
     } // ✅ <- init endet hier korrekt!
 
     func startJoin(sessionID: String, joinCode: String) {
@@ -120,12 +136,24 @@ final class PartyGuestController: ObservableObject {
         joinTimeoutTask?.cancel()
         joinTimeoutTask = nil
         
-        let lastSession = defaults.string(forKey: lastSessionKey)
+        let lastSession = localStore.state.lastSessionID
         let wasSameSessionBefore = (lastSession == sessionID)
+        // persist current preferences
+        localStore.state.displayName = self.displayName
+        localStore.state.hasAppleMusic = self.hasAppleMusic
+        localStore.state.sendUpVotesEnabled = self.sendUpVotesEnabled
+        localStore.state.sendDownVotesEnabled = self.sendDownVotesEnabled
 
         status = wasSameSessionBefore ? .reconnecting : .connecting
 
         DebugLog.shared.add("GUEST", wasSameSessionBefore ? "UI: reconnecting" : "UI: connecting")
+
+        // Restore locally persisted cooldowns (decayed by elapsed time) for immediate UI feedback
+        if let ts = localStore.state.cooldownsSnapshotAt {
+            let elapsed = Date().timeIntervalSince(ts)
+            let decayed = localStore.state.lastKnownCooldowns.mapValues { max(0, $0 - elapsed) }
+            self.itemCooldowns = decayed
+        }
         
         locationService.requestWhenInUse()
         locationService.start()
@@ -270,9 +298,9 @@ final class PartyGuestController: ObservableObject {
                 DebugLog.shared.add("GUEST", "joinDecision accepted=\(dec.accepted) reason=\(dec.reason ?? "nil")")
                 if dec.accepted {
                     status = .admitted
-                    defaults.set(self.sessionID, forKey: lastSessionKey)
-                    defaults.set(self.joinCode, forKey: lastJoinCodeKey)
-                    defaults.set(Date().timeIntervalSince1970, forKey: lastAdmittedAtKey)
+                    localStore.state.lastSessionID = self.sessionID
+                    localStore.state.lastJoinCode = self.joinCode
+                    localStore.state.lastAdmittedAt = Date()
                 } else {
                     status = .rejected(dec.reason ?? "Abgelehnt")
                 }
@@ -282,6 +310,10 @@ final class PartyGuestController: ObservableObject {
                 state = snap.state
                 itemCooldowns = snap.cooldowns ?? [:]
                 lastSnapshotAt = Date()
+
+                // Persist last known cooldowns with timestamp for crash-safe UX
+                localStore.state.lastKnownCooldowns = self.itemCooldowns
+                localStore.state.cooldownsSnapshotAt = self.lastSnapshotAt
 
                 if let slots = snap.remainingActionSlots { self.remainingActionSlots = slots }
                 if let sc = snap.suggestionCooldownSeconds { self.suggestionCooldownSeconds = sc }
@@ -390,6 +422,29 @@ final class PartyGuestController: ObservableObject {
 
         // Back to idle
         status = .idle
+    }
+
+    private func migrateLegacyKeysIfNeeded() {
+        // If the new store already has a lastSessionID, assume migration done
+        if localStore.state.lastSessionID != nil { return }
+        let lastSession = defaults.string(forKey: lastSessionKey)
+        let lastJoin = defaults.string(forKey: lastJoinCodeKey)
+        let lastAdmittedTs = defaults.double(forKey: lastAdmittedAtKey)
+        var migrated = false
+        if lastSession != nil || lastJoin != nil || lastAdmittedTs > 0 {
+            localStore.state.lastSessionID = lastSession
+            localStore.state.lastJoinCode = lastJoin
+            if lastAdmittedTs > 0 {
+                localStore.state.lastAdmittedAt = Date(timeIntervalSince1970: lastAdmittedTs)
+            }
+            migrated = true
+        }
+        if migrated {
+            // Optionally clear legacy keys
+            defaults.removeObject(forKey: lastSessionKey)
+            defaults.removeObject(forKey: lastJoinCodeKey)
+            defaults.removeObject(forKey: lastAdmittedAtKey)
+        }
     }
 }
 

@@ -8,11 +8,13 @@
 
 /* Begin PBXBuildFile section */
 		948531A62EFECBEE000FA7D1 /* Brand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 948531A52EFECBEE000FA7D1 /* Brand.swift */; };
+		94F2694B2EFF332900953914 /* GuestLocalStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94F2694A2EFF332900953914 /* GuestLocalStateStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		693CF33F2EF2E25A0054BCB0 /* PartyPlayer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PartyPlayer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		948531A52EFECBEE000FA7D1 /* Brand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Brand.swift; sourceTree = "<group>"; };
+		94F2694A2EFF332900953914 /* GuestLocalStateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuestLocalStateStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -53,6 +55,7 @@
 				693CF3412EF2E25A0054BCB0 /* PartyPlayer */,
 				693CF3402EF2E25A0054BCB0 /* Products */,
 				948531A52EFECBEE000FA7D1 /* Brand.swift */,
+				94F2694A2EFF332900953914 /* GuestLocalStateStore.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -139,6 +142,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				948531A62EFECBEE000FA7D1 /* Brand.swift in Sources */,
+				94F2694B2EFF332900953914 /* GuestLocalStateStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
