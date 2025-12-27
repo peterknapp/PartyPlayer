@@ -1098,7 +1098,7 @@ final class AudioSessionManager {
     func configurePlaybackSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playback, mode: .default, options: [.allowBluetooth, .allowAirPlay])
+            try session.setCategory(.playback, mode: .default, options: [.allowAirPlay])
             try session.setActive(true)
             DebugLog.shared.add("AUDIO", "Audio session configured for playback")
         } catch {
