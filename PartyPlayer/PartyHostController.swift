@@ -3,6 +3,7 @@ import Combine
 import CoreLocation
 import MultipeerConnectivity
 import MusicKit
+import AVFAudio
 
 @MainActor
 final class PartyHostController: ObservableObject {
@@ -181,6 +182,9 @@ final class PartyHostController: ObservableObject {
         locationService.start()
         mpc.startHosting(discoveryInfo: ["sessionID": state.sessionID])
         startNowPlayingBroadcast()
+        // Configure audio session for background playback and remote controls
+        AudioSessionManager.shared.configurePlaybackSession()
+        playback.setupRemoteCommands()
     }
 
     // MARK: - Location helpers
@@ -1084,6 +1088,21 @@ final class PartyHostController: ObservableObject {
             self.pendingSuggestions = arr
         } catch {
             DebugLog.shared.add("HOST", "loadPendingSuggestions failed: \(error.localizedDescription)")
+        }
+    }
+}
+
+final class AudioSessionManager {
+    static let shared = AudioSessionManager()
+    private init() {}
+    func configurePlaybackSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default, options: [.allowBluetooth, .allowAirPlay])
+            try session.setActive(true)
+            DebugLog.shared.add("AUDIO", "Audio session configured for playback")
+        } catch {
+            DebugLog.shared.add("AUDIO", "Audio session config failed: \(error.localizedDescription)")
         }
     }
 }

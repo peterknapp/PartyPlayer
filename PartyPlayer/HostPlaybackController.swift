@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import MusicKit
+import MediaPlayer
 
 @MainActor
 final class HostPlaybackController: ObservableObject {
@@ -12,6 +13,12 @@ final class HostPlaybackController: ObservableObject {
 
     private let systemPlayer = SystemMusicPlayer.shared
     private let appPlayer = ApplicationMusicPlayer.shared
+
+    // Remote command & Now Playing metadata
+    private var remoteCommandsSetup = false
+    private var nowPlayingTitle: String? = nil
+    private var nowPlayingArtist: String? = nil
+    private var nowPlayingDuration: TimeInterval? = nil
 
     private var isRunningOnMac: Bool {
         #if os(macOS)
@@ -25,7 +32,7 @@ final class HostPlaybackController: ObservableObject {
         #endif
     }
 
-    private var playbackStatus: MusicPlayer.PlaybackStatus {
+    private var playbackStatus: MusicKit.MusicPlayer.PlaybackStatus {
         isRunningOnMac ? appPlayer.state.playbackStatus : systemPlayer.state.playbackStatus
     }
 
@@ -78,10 +85,11 @@ final class HostPlaybackController: ObservableObject {
         if isRunningOnMac {
             appPlayer.queue = ApplicationMusicPlayer.Queue(for: songs)
         } else {
-            systemPlayer.queue = MusicPlayer.Queue(for: songs)
+            systemPlayer.queue = MusicKit.MusicPlayer.Queue(for: songs)
         }
         try await prepareActivePlayerToPlay()
         updateArtwork(from: songs)
+        self.updateNowPlayingInfo(position: self.playbackTime, isPlaying: self.isPlaying)
         DebugLog.shared.add("MUSIC", "queue set: \(songs.count) songs")
         diagnoseEnvironment()
     }
@@ -93,6 +101,10 @@ final class HostPlaybackController: ObservableObject {
         if let url = artwork.url(width: 600, height: 600) {
             self.currentArtworkURL = url
             DebugLog.shared.add("MUSIC", "artwork preset from first song: \(url.absoluteString)")
+            self.nowPlayingTitle = first.title
+            self.nowPlayingArtist = first.artistName
+            self.nowPlayingDuration = first.duration
+            self.updateNowPlayingInfo(position: self.playbackTime, isPlaying: self.isPlaying)
         }
     }
 
@@ -139,6 +151,7 @@ final class HostPlaybackController: ObservableObject {
             systemPlayer.playbackTime = clamped
         }
         DebugLog.shared.add("MUSIC", String(format: "seek(to: %.2f)", clamped))
+        self.updateNowPlayingInfo(position: clamped, isPlaying: self.isPlaying)
     }
 
     // MARK: - Queue
@@ -166,10 +179,14 @@ final class HostPlaybackController: ObservableObject {
         if isRunningOnMac {
             appPlayer.queue = ApplicationMusicPlayer.Queue(for: songs)
         } else {
-            systemPlayer.queue = MusicPlayer.Queue(for: songs)
+            systemPlayer.queue = MusicKit.MusicPlayer.Queue(for: songs)
         }
         try await prepareActivePlayerToPlay()
         updateArtwork(from: songs)
+        self.nowPlayingTitle = songs.first?.title
+        self.nowPlayingArtist = songs.first?.artistName
+        self.nowPlayingDuration = songs.first?.duration
+        self.updateNowPlayingInfo(position: self.playbackTime, isPlaying: self.isPlaying)
         DebugLog.shared.add("MUSIC", "queue set: \(songs.count) songs")
     }
 
@@ -190,6 +207,7 @@ final class HostPlaybackController: ObservableObject {
             try await systemPlayer.play()
         }
         isPlaying = true
+        self.updateNowPlayingInfo(position: self.playbackTime, isPlaying: true)
     }
 
     func pause() {
@@ -200,6 +218,7 @@ final class HostPlaybackController: ObservableObject {
             systemPlayer.pause()
         }
         isPlaying = false
+        self.updateNowPlayingInfo(position: self.playbackTime, isPlaying: false)
     }
 
     func skipToNext() async throws {
@@ -210,6 +229,31 @@ final class HostPlaybackController: ObservableObject {
             try await systemPlayer.skipToNextEntry()
         }
         diagnoseEnvironment()
+    }
+
+    func setupRemoteCommands() {
+        guard !remoteCommandsSetup else { return }
+        remoteCommandsSetup = true
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.isEnabled = true
+        center.pauseCommand.isEnabled = true
+        center.nextTrackCommand.isEnabled = true
+
+        center.playCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            Task { try? await self.play() }
+            return .success
+        }
+        center.pauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            self.pause()
+            return .success
+        }
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            Task { try? await self.skipToNext() }
+            return .success
+        }
     }
 
     // MARK: - Polling (simple + robust)
@@ -247,6 +291,17 @@ final class HostPlaybackController: ObservableObject {
     func stopTick() {
         tickTask?.cancel()
         tickTask = nil
+    }
+
+    private func updateNowPlayingInfo(position: Double? = nil, isPlaying: Bool? = nil) {
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        if let title = nowPlayingTitle { info[MPMediaItemPropertyTitle] = title }
+        if let artist = nowPlayingArtist { info[MPMediaItemPropertyArtist] = artist }
+        if let dur = nowPlayingDuration { info[MPMediaItemPropertyPlaybackDuration] = dur }
+        if let pos = position ?? Optional(playbackTime) { info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = pos }
+        let playing = isPlaying ?? self.isPlaying
+        info[MPNowPlayingInfoPropertyPlaybackRate] = playing ? 1.0 : 0.0
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 }
 
