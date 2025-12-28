@@ -87,7 +87,8 @@ struct ContentView: View {
                             hostTab: $hostTab,
                             adminUnlocked: $adminUnlocked,
                             showAdminPrompt: $showAdminPrompt,
-                            adminCode: $adminCode
+                            adminCode: $adminCode,
+                            onDissolve: { dissolveParty() }
                         )
                     }
                     if let guest = guestHolder.guest, !isRunningOnMac {
@@ -235,6 +236,28 @@ struct ContentView: View {
 
         guestHolder.guest?.startJoin(sessionID: sessionID, joinCode: joinCode)
     }
+
+    private func dissolveParty() {
+        // Reset host and guest controllers
+        hostHolder.host = nil
+        guestHolder.guest = nil
+        // Reset modes and admin-related state
+        mode = nil
+        adminUnlocked = false
+        showAdminPrompt = false
+        adminCode = nil
+        hostTab = .publicView
+        // Reset any prompts / inputs
+        adminPromptDismissWorkItem?.cancel()
+        adminPromptDismissWorkItem = nil
+        adminPromptInput = ""
+        pendingAdminCodeSetup = false
+        adminCodeInput1 = ""
+        adminCodeInput2 = ""
+        // Ensure scanner is closed
+        showScanner = false
+        didScanSuccessfully = false
+    }
 }
 
 // MARK: - Shake Effect (Reusable)
@@ -268,6 +291,7 @@ private struct HostTabsView: View {
     @Binding var adminUnlocked: Bool
     @Binding var showAdminPrompt: Bool
     @Binding var adminCode: String?
+    var onDissolve: () -> Void
 
     @State private var adminLockTimer: Timer? = nil
     @State private var lastInteractionAt: Date = Date()
@@ -351,6 +375,30 @@ private struct HostTabsView: View {
                 }
             }
         }
+        .sheet(isPresented: $showAddSongs) {
+            AdminAddSongsView(host: host) {
+                showAddSongs = false
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            AdminSettingsView(
+                host: host,
+                adminAutoLockSeconds: $adminAutoLockSeconds,
+                onDone: { showSettings = false },
+                onInteraction: { registerInteraction() },
+                onDissolve: {
+                    showSettings = false
+                    lockNow()
+                    onDissolve()
+                }
+            )
+        }
+        .sheet(isPresented: $showInbox) {
+            AdminInboxView(host: host) {
+                showInbox = false
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private func scheduleAutoLock() {
@@ -519,7 +567,12 @@ private struct HostTabsView: View {
                 host: host,
                 adminAutoLockSeconds: $adminAutoLockSeconds,
                 onDone: { showSettings = false },
-                onInteraction: { registerInteraction() }
+                onInteraction: { registerInteraction() },
+                onDissolve: {
+                    showSettings = false
+                    lockNow()
+                    onDissolve()
+                }
             )
         }
         .sheet(isPresented: $showInbox) {
@@ -2361,7 +2414,10 @@ private struct AdminSettingsView: View {
     @Binding var adminAutoLockSeconds: Int
     var onDone: () -> Void
     var onInteraction: () -> Void
+    var onDissolve: () -> Void
+
     @Environment(\.dismiss) private var dismiss
+    @State private var showDissolveConfirm: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -2424,6 +2480,14 @@ private struct AdminSettingsView: View {
                         }
                     }
                 }
+
+                Section {
+                    Button(role: .destructive) {
+                        showDissolveConfirm = true
+                    } label: {
+                        Text("Party auflösen")
+                    }
+                }
             }
             .navigationTitle("Einstellungen")
             .navigationBarTitleDisplayMode(.inline)
@@ -2438,6 +2502,14 @@ private struct AdminSettingsView: View {
             .onChange(of: host.maxConcurrentActions) { _, _ in onInteraction() }
             .onChange(of: adminAutoLockSeconds) { _, _ in onInteraction() }
             .onChange(of: host.suggestionCooldownSeconds) { _, _ in onInteraction() }
+            .alert("Bist du sicher?", isPresented: $showDissolveConfirm) {
+                Button("Abbrechen", role: .cancel) { }
+                Button("Auflösen", role: .destructive) {
+                    onDissolve()
+                }
+            } message: {
+                Text("Die aktuelle Party wird beendet und alle Daten werden zurückgesetzt.")
+            }
         }
     }
 
