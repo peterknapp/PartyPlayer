@@ -1,12 +1,13 @@
 import SwiftUI
 import Combine
 import MusicKit
+import CoreLocation
 #if os(iOS)
 import UIKit
 #endif
 
 struct ContentView: View {
-    @StateObject private var locationService = LocationService()
+    @ObservedObject var locationService: LocationService
 
     @State private var displayName: String = {
         #if os(macOS)
@@ -40,6 +41,7 @@ struct ContentView: View {
     @State private var hostRestoreInput: String = ""
     @State private var hostRestoreShake: CGFloat = 0
     @State private var showGuestRestorePrompt: Bool = false
+    @State private var showAppleMusicGate: Bool = false
 
     #if DEBUG
     @State private var showDebugOverlay = false
@@ -74,7 +76,11 @@ struct ContentView: View {
                         Text("Party Player").font(.largeTitle.bold())
                         HStack {
                             Button("Party anlegen") {
-                                pendingAdminCodeSetup = true
+                                if MusicAuthorization.currentStatus == .authorized {
+                                    pendingAdminCodeSetup = true
+                                } else {
+                                    showAppleMusicGate = true
+                                }
                             }
                             Button("Party beitreten") {
                                 if !isRunningOnMac {
@@ -199,6 +205,17 @@ struct ContentView: View {
                     }
                 )
             }
+            .fullScreenCover(isPresented: $showAppleMusicGate) {
+                AppleMusicGateView(
+                    onAuthorized: {
+                        showAppleMusicGate = false
+                        pendingAdminCodeSetup = true
+                    },
+                    onCancel: {
+                        showAppleMusicGate = false
+                    }
+                )
+            }
             .sheet(isPresented: $showHostRestorePrompt, onDismiss: {
                 hostRestoreInput = ""
                 hostRestoreShake = 0
@@ -230,7 +247,9 @@ struct ContentView: View {
                 )
             }
             .onAppear {
-                locationService.requestWhenInUse()
+                if locationService.authorizationStatus == .notDetermined {
+                    locationService.requestWhenInUse()
+                }
                 locationService.start()
                 if hostHolder.host == nil, let saved = hostStore.state {
                     if saved.adminCodeHash == nil {
@@ -1891,6 +1910,71 @@ private struct GuestRestorePromptView: View {
         }
         .padding()
         .presentationDetents([.fraction(0.28)])
+    }
+}
+
+// MARK: - AppleMusicGateView
+
+private struct AppleMusicGateView: View {
+    var onAuthorized: () -> Void
+    var onCancel: () -> Void
+
+    @State private var status: MusicAuthorization.Status = MusicAuthorization.currentStatus
+    @State private var isRequesting = false
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Text("Apple Music erforderlich")
+                .font(.title2.bold())
+            Text("Zum Hosten brauchst du eine aktive Apple Music‑Autorisierung. Ohne Zugriff kann die App nicht genutzt werden.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            if status == .denied || status == .restricted {
+                Text("Bitte erlaube Apple Music in den Einstellungen.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 16) {
+                Button("Zurück") { onCancel() }
+                Button(isRequesting ? "Bitte warten…" : "Weiter") {
+                    requestAuthorization()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isRequesting)
+            }
+            #if os(iOS)
+            if status == .denied || status == .restricted {
+                Button("Einstellungen öffnen") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                .padding(.top, 6)
+            }
+            #endif
+        }
+        .padding()
+        .onAppear {
+            status = MusicAuthorization.currentStatus
+            if status == .authorized {
+                onAuthorized()
+            }
+        }
+    }
+
+    private func requestAuthorization() {
+        isRequesting = true
+        Task { @MainActor in
+            let newStatus = await MusicAuthorization.request()
+            status = newStatus
+            isRequesting = false
+            if newStatus == .authorized {
+                onAuthorized()
+            }
+        }
     }
 }
 

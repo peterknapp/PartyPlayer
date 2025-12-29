@@ -1,7 +1,7 @@
 import Foundation
-import Combine
 import Network
 
+@MainActor
 final class LocalNetworkPermission: ObservableObject {
     enum Status {
         case unknown
@@ -23,9 +23,7 @@ final class LocalNetworkPermission: ObservableObject {
         do {
             let listener = try NWListener(using: params)
             listener.stateUpdateHandler = { [weak self] state in
-                Task { @MainActor in
-                    self?.handle(state: state)
-                }
+                self?.handle(state: state)
             }
             listener.start(queue: .main)
             self.listener = listener
@@ -37,36 +35,16 @@ final class LocalNetworkPermission: ObservableObject {
 
         let browser = NWBrowser(for: .bonjour(type: "_partyplayer._tcp", domain: nil), using: params)
         browser.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor in
-                self?.handle(state: state)
-            }
+            self?.handle(state: state)
         }
         browser.start(queue: .main)
         self.browser = browser
-
-        // Fallback: if no state transition occurs, treat as denied after timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            guard let self else { return }
-            if self.status == .unknown {
-                self.status = .denied
-                self.cleanup()
-            }
-        }
-    }
-
-    func refreshAuthorization() {
-        cleanup()
-        status = .unknown
-        requestAuthorization()
     }
 
     private func handle(state: NWBrowser.State) {
         switch state {
         case .ready:
             status = .granted
-            cleanup()
-        case .waiting:
-            status = .denied
             cleanup()
         case .failed(let error):
             if case .posix(let code) = error, code == .EPERM {
@@ -84,9 +62,6 @@ final class LocalNetworkPermission: ObservableObject {
         switch state {
         case .ready:
             status = .granted
-            cleanup()
-        case .waiting:
-            status = .denied
             cleanup()
         case .failed(let error):
             if case .posix(let code) = error, code == .EPERM {

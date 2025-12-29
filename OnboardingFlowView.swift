@@ -1,9 +1,6 @@
 import SwiftUI
 import AVFoundation
 #if os(iOS)
-import CoreLocation
-#endif
-#if os(iOS)
 import UIKit
 #endif
 

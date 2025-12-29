@@ -30,6 +30,10 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         authorizationStatus = manager.authorizationStatus
     }
 
+    func refreshAuthorization() {
+        authorizationStatus = manager.authorizationStatus
+    }
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         lastLocation = locations.last
     }

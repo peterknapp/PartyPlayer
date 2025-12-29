@@ -1,8 +1,5 @@
 import SwiftUI
 #if os(iOS)
-import CoreLocation
-#endif
-#if os(iOS)
 import UIKit
 #endif
 
@@ -26,14 +23,9 @@ struct AppFlowView: View {
                     }
                     .onAppear { refreshPermissions() }
                     .onChange(of: locationService.authorizationStatus) { _, _ in refreshPermissions() }
-                    .onChange(of: networkPermission.status) { _, _ in
-                        if networkPermission.status == .granted {
-                            localNetworkGranted = true
-                        }
-                        refreshPermissions()
-                    }
+                    .onChange(of: networkPermission.status) { _, _ in refreshPermissions() }
                     .onChange(of: scenePhase) { _, phase in
-                        if phase == .active { refreshPermissions(forceNetworkCheck: true) }
+                        if phase == .active { refreshPermissions() }
                     }
             } else {
                 OnboardingFlowView(locationService: locationService) {
@@ -43,10 +35,8 @@ struct AppFlowView: View {
         }
     }
 
-    private func refreshPermissions(forceNetworkCheck: Bool = false) {
+    private func refreshPermissions() {
         guard hasCompletedOnboarding else { return }
-
-        locationService.refreshAuthorization()
 
         let locStatus = locationService.authorizationStatus
         if locStatus == .denied || locStatus == .restricted {
@@ -54,8 +44,13 @@ struct AppFlowView: View {
             return
         }
 
-        if forceNetworkCheck || networkPermission.status == .unknown {
-            networkPermission.refreshAuthorization()
+        guard localNetworkGranted else {
+            permissionGate = nil
+            return
+        }
+
+        if networkPermission.status == .unknown {
+            networkPermission.requestAuthorization()
             return
         }
 
@@ -92,7 +87,7 @@ private struct PermissionGateView: View {
                 Button("Erneut prüfen") { onCheckAgain() }
                 #if os(iOS)
                 Button("Einstellungen öffnen") { openSettings() }
-                    .buttonStyle(.borderedProminent)
+                .buttonStyle(.borderedProminent)
                 #endif
             }
         }

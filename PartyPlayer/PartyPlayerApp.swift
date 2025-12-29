@@ -4,7 +4,7 @@ import SwiftUI
 struct PartyPlayerApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            AppFlowView()
                 .tint(Brand.accent)
         }
     }
