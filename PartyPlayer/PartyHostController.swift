@@ -7,26 +7,26 @@ import AVFAudio
 
 @MainActor
 final class PartyHostController: ObservableObject {
-    @Published private(set) var state: PartyState
-    @Published var joinCode: String
+    @Published private(set) var state: PartyState { didSet { persistSnapshot() } }
+    @Published var joinCode: String { didSet { persistSnapshot() } }
     @Published private(set) var nowPlaying: PartyMessage.NowPlayingPayload? = nil
     @Published private(set) var pendingSkipRequests: [PendingSkipRequest] = []
     @Published var votingEngineEnabled: Bool = true
-    @Published var voteThresholdPercent: Int = 50
+    @Published var voteThresholdPercent: Int = 50 { didSet { persistSnapshot() } }
     @Published var processDownOutcomes: Bool = true
     @Published var processUpOutcomes: Bool = true
     @Published var processSendToEndOutcomes: Bool = true
-    @Published private(set) var removedItems: [QueueItem] = []
-    @Published private(set) var pendingSuggestions: [PendingSuggestion] = [] { didSet { savePendingSuggestions() } }
+    @Published private(set) var removedItems: [QueueItem] = [] { didSet { persistSnapshot() } }
+    @Published private(set) var pendingSuggestions: [PendingSuggestion] = [] { didSet { savePendingSuggestions(); persistSnapshot() } }
 
     private let mpc: MPCService
     // Concurrent action slots per member (e.g., 3). Each spent when a vote is accepted and restored when the per-item cooldown elapses.
-    @Published var maxConcurrentActions: Int = 3
+    @Published var maxConcurrentActions: Int = 3 { didSet { persistSnapshot() } }
     private var activeActions: [MemberID: Int] = [:]
 
     private var perItemLimiter = PerItemVoteLimiter()
-    @Published var perItemCooldownMinutes: Int = 1 { didSet { perItemLimiter.setCooldown(minutes: perItemCooldownMinutes) } }
-    @Published var suggestionCooldownSeconds: Int = 60
+    @Published var perItemCooldownMinutes: Int = 1 { didSet { perItemLimiter.setCooldown(minutes: perItemCooldownMinutes); persistSnapshot() } }
+    @Published var suggestionCooldownSeconds: Int = 60 { didSet { persistSnapshot() } }
     private let locationService: LocationService
     private let playback = HostPlaybackController()
     private let playlist = PlaylistEngine()
@@ -34,7 +34,7 @@ final class PartyHostController: ObservableObject {
     private let mirrorWindowSize: Int = 5
 
     enum VotingMode: String, Codable { case automatic, hostApproval }
-    @Published var votingMode: VotingMode = .automatic
+    @Published var votingMode: VotingMode = .automatic { didSet { persistSnapshot() } }
 
     /// Pending outcomes awaiting host approval
     struct PendingVoteOutcome: Identifiable, Equatable {
@@ -61,6 +61,8 @@ final class PartyHostController: ObservableObject {
 
     private var lastSuggestionAt: [MemberID: Date] = [:]
     private let pendingSuggestionsKey = "pp_pendingSuggestions"
+    var adminCodeHash: String? = nil { didSet { persistSnapshot() } }
+    private let localStore: HostLocalStateStore?
 
     // MARK: - Debug logging
 
@@ -126,16 +128,36 @@ final class PartyHostController: ObservableObject {
         activeActions[member] = max(0, used - 1)
     }
 
-    init(hostName: String, locationService: LocationService) {
+    init(
+        hostName: String,
+        locationService: LocationService,
+        localStore: HostLocalStateStore? = nil,
+        restoredState: HostLocalState? = nil
+    ) {
+        self.localStore = localStore
         self.locationService = locationService
-        self.state = PartyState(
-            sessionID: String(UUID().uuidString.prefix(6)).uppercased(),
-            hostName: hostName,
-            createdAt: Date()
-        )
-        self.joinCode = String(UUID().uuidString.prefix(6)).uppercased()
+        if let restoredState {
+            self.state = restoredState.partyState
+            self.joinCode = restoredState.joinCode
+            self.removedItems = restoredState.removedItems
+            self.pendingSuggestions = restoredState.pendingSuggestions
+            self.votingMode = restoredState.votingMode
+            self.perItemCooldownMinutes = restoredState.perItemCooldownMinutes
+            self.suggestionCooldownSeconds = restoredState.suggestionCooldownSeconds
+            self.voteThresholdPercent = restoredState.voteThresholdPercent
+            self.maxConcurrentActions = restoredState.maxConcurrentActions
+            self.adminCodeHash = restoredState.adminCodeHash
+        } else {
+            self.state = PartyState(
+                sessionID: String(UUID().uuidString.prefix(6)).uppercased(),
+                hostName: hostName,
+                createdAt: Date()
+            )
+            self.joinCode = String(UUID().uuidString.prefix(6)).uppercased()
+        }
 
-        self.mpc = MPCService(displayName: "HOST-\(hostName)")
+        let displayName = restoredState?.partyState.hostName ?? hostName
+        self.mpc = MPCService(displayName: "HOST-\(displayName)")
         self.mpc.onData = { [weak self] data, peer in
             Task { await self?.handleIncoming(data: data, from: peer) }
         }
@@ -153,7 +175,13 @@ final class PartyHostController: ObservableObject {
         }
         // Ensure initial cooldown is applied
         self.perItemLimiter.setCooldown(minutes: self.perItemCooldownMinutes)
-        self.loadPendingSuggestions()
+        if restoredState == nil {
+            self.loadPendingSuggestions()
+        }
+        if restoredState != nil {
+            self.savePendingSuggestions()
+            Task { await self.hydrateFromRestoredState() }
+        }
     }
 
     // MARK: - Skip approval UI
@@ -185,6 +213,7 @@ final class PartyHostController: ObservableObject {
         // Configure audio session for background playback and remote controls
         AudioSessionManager.shared.configurePlaybackSession()
         playback.setupRemoteCommands()
+        persistSnapshot()
     }
 
     // MARK: - Location helpers
@@ -254,6 +283,14 @@ final class PartyHostController: ObservableObject {
         // If we ever attach a Task-based ticker, cancel here
         nowPlayingBroadcastTask?.cancel()
         nowPlayingBroadcastTask = nil
+        playback.stopTick()
+    }
+
+    func stopHosting() {
+        stopNowPlayingBroadcast()
+        playback.pause()
+        mpc.stopHosting()
+        mpc.disconnect()
     }
 
     private func advanceToNextAndPlay() {
@@ -918,6 +955,23 @@ final class PartyHostController: ObservableObject {
         }
     }
 
+    private func hydrateFromRestoredState() async {
+        await playlist.loadInitial(state.queue)
+        if let nowID = state.nowPlayingItemID {
+            await playlist.setCurrent(toItemID: nowID)
+        } else if let current = await playlist.current() {
+            state.nowPlayingItemID = current.id
+        }
+        if !state.queue.isEmpty {
+            await rebuildPlayerQueuePreservingCurrent()
+        }
+        persistSnapshot()
+    }
+
+    private func persistSnapshot() {
+        localStore?.update(from: self)
+    }
+
     // MARK: - Snapshot / send helpers
 
     private func broadcastSnapshot() {
@@ -1081,6 +1135,10 @@ final class PartyHostController: ObservableObject {
             DebugLog.shared.add("HOST", "savePendingSuggestions failed: \(error.localizedDescription)")
         }
     }
+
+    func clearPendingSuggestionsStorage() {
+        UserDefaults.standard.removeObject(forKey: pendingSuggestionsKey)
+    }
     private func loadPendingSuggestions() {
         guard let data = UserDefaults.standard.data(forKey: pendingSuggestionsKey) else { return }
         do {
@@ -1106,4 +1164,3 @@ final class AudioSessionManager {
         }
     }
 }
-

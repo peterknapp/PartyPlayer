@@ -20,11 +20,12 @@ struct ContentView: View {
 
     @StateObject private var hostHolder = HostHolder()
     @StateObject private var guestHolder = GuestHolder()
+    @StateObject private var hostStore = HostLocalStateStore()
 
     @State private var showScanner = false
     @State private var didScanSuccessfully: Bool = false
 
-    @State private var adminCode: String? = nil
+    @State private var adminCodeHash: String? = nil
     @State private var pendingAdminCodeSetup: Bool = false
     @State private var adminCodeInput1: String = ""
     @State private var adminCodeInput2: String = ""
@@ -34,6 +35,9 @@ struct ContentView: View {
     @State private var adminPromptInput: String = ""
     @State private var adminPromptDismissWorkItem: DispatchWorkItem? = nil
     @State private var adminPromptShake: CGFloat = 0
+    @State private var showHostRestorePrompt: Bool = false
+    @State private var hostRestoreInput: String = ""
+    @State private var hostRestoreShake: CGFloat = 0
 
     #if DEBUG
     @State private var showDebugOverlay = false
@@ -87,7 +91,7 @@ struct ContentView: View {
                             hostTab: $hostTab,
                             adminUnlocked: $adminUnlocked,
                             showAdminPrompt: $showAdminPrompt,
-                            adminCode: $adminCode,
+                            adminCodeHash: $adminCodeHash,
                             onDissolve: { dissolveParty() }
                         )
                     }
@@ -136,7 +140,7 @@ struct ContentView: View {
                     input1: $adminCodeInput1,
                     input2: $adminCodeInput2,
                     onConfirm: {
-                        adminCode = adminCodeInput1
+                        adminCodeHash = PinHasher.hash(adminCodeInput1)
                         adminCodeInput1 = ""
                         adminCodeInput2 = ""
                         pendingAdminCodeSetup = false
@@ -166,8 +170,8 @@ struct ContentView: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: work)
                     },
                     onSubmit: {
-                        guard let code = adminCode else { return }
-                        if adminPromptInput == code {
+                        guard let codeHash = adminCodeHash else { return }
+                        if PinHasher.hash(adminPromptInput) == codeHash {
                             adminUnlocked = true
                             showAdminPrompt = false
                             hostTab = .admin
@@ -181,9 +185,46 @@ struct ContentView: View {
                     }
                 )
             }
+            .sheet(isPresented: $showHostRestorePrompt, onDismiss: {
+                hostRestoreInput = ""
+                hostRestoreShake = 0
+            }) {
+                HostRestorePromptView(
+                    codeInput: $hostRestoreInput,
+                    shakeTrigger: $hostRestoreShake,
+                    onSubmit: {
+                        guard let saved = hostStore.state else { return }
+                        guard let savedHash = saved.adminCodeHash else { return }
+                        if PinHasher.hash(hostRestoreInput) == savedHash {
+                            adminCodeHash = savedHash
+                            hostRestoreInput = ""
+                            showHostRestorePrompt = false
+                            restoreHost(from: saved)
+                        } else {
+                            hostRestoreInput = ""
+                            hostRestoreShake = 0
+                            withAnimation(.spring(response: 0.18, dampingFraction: 0.55)) {
+                                hostRestoreShake += 1
+                            }
+                        }
+                    },
+                    onReset: {
+                        hostStore.clear()
+                        adminCodeHash = nil
+                        showHostRestorePrompt = false
+                    }
+                )
+            }
             .onAppear {
                 locationService.requestWhenInUse()
                 locationService.start()
+                if hostHolder.host == nil, let saved = hostStore.state {
+                    if saved.adminCodeHash == nil {
+                        restoreHost(from: saved)
+                    } else {
+                        showHostRestorePrompt = true
+                    }
+                }
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("GuestDidLeave"))) { _ in
                 guestHolder.guest = nil
@@ -211,10 +252,13 @@ struct ContentView: View {
         mode = .host
         let host = PartyHostController(
             hostName: (isRunningOnMac ? "Host" : UIDevice.current.name),
-            locationService: locationService
+            locationService: locationService,
+            localStore: hostStore
         )
+        host.adminCodeHash = adminCodeHash
         host.startHosting()
         hostHolder.host = host
+        hostStore.update(from: host)
     }
 
     private func startGuest() {
@@ -239,14 +283,17 @@ struct ContentView: View {
 
     private func dissolveParty() {
         // Reset host and guest controllers
+        hostHolder.host?.stopHosting()
+        hostHolder.host?.clearPendingSuggestionsStorage()
         hostHolder.host = nil
         guestHolder.guest = nil
         // Reset modes and admin-related state
         mode = nil
         adminUnlocked = false
         showAdminPrompt = false
-        adminCode = nil
+        adminCodeHash = nil
         hostTab = .publicView
+        hostStore.clear()
         // Reset any prompts / inputs
         adminPromptDismissWorkItem?.cancel()
         adminPromptDismissWorkItem = nil
@@ -257,6 +304,21 @@ struct ContentView: View {
         // Ensure scanner is closed
         showScanner = false
         didScanSuccessfully = false
+    }
+
+    private func restoreHost(from saved: HostLocalState) {
+        mode = .host
+        let host = PartyHostController(
+            hostName: saved.partyState.hostName,
+            locationService: locationService,
+            localStore: hostStore,
+            restoredState: saved
+        )
+        host.adminCodeHash = saved.adminCodeHash
+        host.startHosting()
+        hostHolder.host = host
+        adminUnlocked = true
+        hostTab = .admin
     }
 }
 
@@ -290,7 +352,7 @@ private struct HostTabsView: View {
     @Binding var hostTab: ContentView.HostTab
     @Binding var adminUnlocked: Bool
     @Binding var showAdminPrompt: Bool
-    @Binding var adminCode: String?
+    @Binding var adminCodeHash: String?
     var onDissolve: () -> Void
 
     @State private var adminLockTimer: Timer? = nil
@@ -325,7 +387,7 @@ private struct HostTabsView: View {
             if newValue == .admin {
                 if !adminUnlocked {
                     hostTab = .publicView
-                    if adminCode != nil {
+                    if adminCodeHash != nil {
                         showAdminPrompt = true
                     }
                 } else {
@@ -557,29 +619,6 @@ private struct HostTabsView: View {
         .onAppear { scheduleAutoLock() }
         .onDisappear { adminLockTimer?.invalidate() }
         .onChange(of: adminAutoLockSeconds) { _, _ in scheduleAutoLock() }
-        .sheet(isPresented: $showAddSongs) {
-            AdminAddSongsView(host: host) {
-                showAddSongs = false
-            }
-        }
-        .sheet(isPresented: $showSettings) {
-            AdminSettingsView(
-                host: host,
-                adminAutoLockSeconds: $adminAutoLockSeconds,
-                onDone: { showSettings = false },
-                onInteraction: { registerInteraction() },
-                onDissolve: {
-                    showSettings = false
-                    lockNow()
-                    onDissolve()
-                }
-            )
-        }
-        .sheet(isPresented: $showInbox) {
-            AdminInboxView(host: host) {
-                showInbox = false
-            }
-        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
@@ -1764,6 +1803,44 @@ private struct AdminCodePromptView: View {
     }
 }
 
+// MARK: - HostRestorePromptView
+
+private struct HostRestorePromptView: View {
+    @Binding var codeInput: String
+    @Binding var shakeTrigger: CGFloat
+    @FocusState private var focusCode: Bool
+    var onSubmit: () -> Void
+    var onReset: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("Party wiederherstellen")
+                .font(.title3.bold())
+            Text("PIN eingeben, um die zuletzt gehostete Party fortzusetzen.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            PinCodeField(title: "", text: $codeInput, focused: $focusCode)
+                .onChange(of: codeInput) { _, newValue in
+                    if newValue.count == 4 { onSubmit() }
+                }
+
+            Button(role: .destructive) {
+                onReset()
+            } label: {
+                Text("Party verwerfen")
+            }
+            .padding(.top, 6)
+        }
+        .padding()
+        .modifier(ShakeEffect(animatableData: shakeTrigger))
+        .animation(.spring(response: 0.18, dampingFraction: 0.55), value: shakeTrigger)
+        .onAppear { focusCode = true }
+        .presentationDetents([.fraction(0.35)])
+    }
+}
+
 // MARK: - GuestView
 
 struct GuestView: View {
@@ -2723,4 +2800,3 @@ private struct GuestSuggestSongsView: View {
         }
     }
 }
-
