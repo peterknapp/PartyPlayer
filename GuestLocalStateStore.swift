@@ -62,4 +62,12 @@ final class GuestLocalStateStore: ObservableObject {
     func clear() {
         state = .empty
     }
+
+    func clearSessionData() {
+        state.lastSessionID = nil
+        state.lastJoinCode = nil
+        state.lastAdmittedAt = nil
+        state.lastKnownCooldowns = [:]
+        state.cooldownsSnapshotAt = nil
+    }
 }

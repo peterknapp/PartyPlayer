@@ -53,6 +53,11 @@ final class HostLocalStateStore: ObservableObject {
         state = nil
     }
 
+    func clearStorage() {
+        defaults.removeObject(forKey: key)
+        state = nil
+    }
+
     private func scheduleSave() {
         pendingWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.saveNow() }

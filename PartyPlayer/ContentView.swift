@@ -76,25 +76,62 @@ struct ContentView: View {
             VStack(spacing: 16) {
                 if hostHolder.host == nil && guestHolder.guest == nil {
                     VStack(spacing: 16) {
-                        Text("Party Player").font(.largeTitle.bold())
-                        HStack {
-                            Button("Party anlegen") {
+                        VStack(spacing: 20) {
+                            Button {
                                 if MusicAuthorization.currentStatus == .authorized {
                                     pendingAdminCodeSetup = true
                                 } else {
                                     showAppleMusicGate = true
                                 }
+                            } label: {
+                                VStack(spacing: 12) {
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 36, weight: .semibold))
+                                        .foregroundStyle(.white)
+                                    Text("Party anlegen")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.white)
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 120)
+                                .background(Color.accentColor)
+                                .clipShape(RoundedRectangle(cornerRadius: 18))
                             }
-                            Button("Party beitreten") {
-                                if !isRunningOnMac {
+                            .buttonStyle(.plain)
+
+                            if !isRunningOnMac {
+                                Button {
                                     if guestHolder.guest == nil { startGuest() }
                                     showScanner = true
+                                } label: {
+                                    VStack(spacing: 12) {
+                                        Image(systemName: "qrcode.viewfinder")
+                                            .font(.system(size: 36, weight: .semibold))
+                                            .foregroundStyle(.white)
+                                        Text("Party beitreten")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.white)
+                                    }
+                                    .frame(maxWidth: .infinity, minHeight: 120)
+                                    .background(Color.accentColor)
+                                    .clipShape(RoundedRectangle(cornerRadius: 18))
                                 }
+                                .buttonStyle(.plain)
                             }
-                            .disabled(isRunningOnMac)
                         }
+                        .padding(.horizontal, 24)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .navigationTitle("Party Player")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button {
+                                showInfoSheet = true
+                            } label: {
+                                Label("Info", systemImage: "info.circle")
+                            }
+                        }
+                    }
                 } else {
                     if let host = hostHolder.host {
                         HostTabsView(
@@ -265,7 +302,7 @@ struct ContentView: View {
                         }
                     },
                     onReset: {
-                        hostStore.clear()
+                        hostStore.clearStorage()
                         adminCodeHash = nil
                         showHostRestorePrompt = false
                     }
@@ -309,7 +346,7 @@ struct ContentView: View {
             #endif
         }
         .toolbar {
-            if hostTab != .admin {
+            if (hostHolder.host != nil || guestHolder.guest != nil) && hostTab != .admin {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         showInfoSheet = true
@@ -374,7 +411,7 @@ struct ContentView: View {
         showAdminPrompt = false
         adminCodeHash = nil
         hostTab = .publicView
-        hostStore.clear()
+        hostStore.clearStorage()
         // Reset any prompts / inputs
         adminPromptDismissWorkItem?.cancel()
         adminPromptDismissWorkItem = nil

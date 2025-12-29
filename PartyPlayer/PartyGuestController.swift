@@ -426,6 +426,9 @@ final class PartyGuestController: ObservableObject {
         // Stop location updates for guest
         locationService.stop()
 
+        // Clear persisted session data (preferences remain)
+        localStore.clearSessionData()
+
         // Back to idle
         status = .idle
     }
