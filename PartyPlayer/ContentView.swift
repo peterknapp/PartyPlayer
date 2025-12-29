@@ -26,6 +26,8 @@ struct ContentView: View {
 
     @State private var showScanner = false
     @State private var didScanSuccessfully: Bool = false
+    @State private var scannerErrorMessage: String? = nil
+    @State private var scannerErrorWorkItem: DispatchWorkItem? = nil
 
     @State private var adminCodeHash: String? = nil
     @State private var pendingAdminCodeSetup: Bool = false
@@ -120,18 +122,36 @@ struct ContentView: View {
                     // Always ensure scanner flag is false and reset the marker
                     showScanner = false
                     didScanSuccessfully = false
+                    scannerErrorMessage = nil
+                    scannerErrorWorkItem?.cancel()
+                    scannerErrorWorkItem = nil
                 }
             ) {
                 NavigationStack {
-                    QRScannerView(onCode: { code in
-                        didScanSuccessfully = true
-                        handleScannedCode(code)
-                        showScanner = false
-                    }, onCancel: {
-                        // Explicit cancel: close and reset guest to initial screen
-                        showScanner = false
-                        guestHolder.guest = nil
-                    })
+                    ZStack {
+                        QRScannerView(onCode: { code in
+                            if isValidJoinCode(code) {
+                                didScanSuccessfully = true
+                                scannerErrorMessage = nil
+                                handleScannedCode(code)
+                                showScanner = false
+                                return true
+                            } else {
+                                scannerErrorMessage = "Falscher QR-Code. Bitte den Party Player Code des Hosts scannen."
+                                scannerErrorWorkItem?.cancel()
+                                let work = DispatchWorkItem { scannerErrorMessage = nil }
+                                scannerErrorWorkItem = work
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+                                return false
+                            }
+                        }, onCancel: {
+                            // Explicit cancel: close and reset guest to initial screen
+                            showScanner = false
+                            guestHolder.guest = nil
+                        })
+                        ScannerOverlayView()
+                        ScannerBannerView(message: scannerErrorMessage)
+                    }
                     .navigationTitle("QR scannen")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
@@ -337,6 +357,11 @@ struct ContentView: View {
         guestHolder.guest?.startJoin(sessionID: sessionID, joinCode: joinCode)
     }
 
+    private func isValidJoinCode(_ code: String) -> Bool {
+        let parts = code.split(separator: "|").map(String.init)
+        return parts.count == 3 && parts[0] == "PP"
+    }
+
     private func dissolveParty() {
         // Reset host and guest controllers
         hostHolder.host?.stopHosting()
@@ -474,15 +499,16 @@ private struct HostTabsView: View {
                             .overlay(alignment: .topTrailing) {
                                 if badgeCount > 0 {
                                     ZStack {
-                                        Circle().fill(Brand.gold)
+                                        Circle().fill(Color.red)
                                         Text(String(min(badgeCount, 99)))
                                             .font(.system(size: 9, weight: .bold))
                                             .foregroundColor(.white)
                                     }
-                                    .frame(width: 16, height: 16)
-                                    .offset(x: 8, y: -8)
+                                    .frame(width: 18, height: 18)
+                                    .offset(x: 6, y: -6)
                                 }
                             }
+                            .padding(.trailing, 6)
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -1951,6 +1977,76 @@ private struct InfoView: View {
             }
             .padding()
         }
+    }
+}
+
+private struct ScannerOverlayView: View {
+
+    var body: some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            let side = min(size.width, size.height) * 0.62
+            let labelY = max((size.height - side) / 2 - 40, 80)
+            let rect = CGRect(
+                x: (size.width - side) / 2,
+                y: (size.height - side) / 2,
+                width: side,
+                height: side
+            )
+
+            ZStack {
+                Color.black.opacity(0.55)
+                    .mask(
+                        Rectangle()
+                            .overlay(
+                                Rectangle()
+                                    .frame(width: rect.width, height: rect.height)
+                                    .position(x: rect.midX, y: rect.midY)
+                                    .blendMode(.destinationOut)
+                            )
+                            .compositingGroup()
+                    )
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.white.opacity(0.8), lineWidth: 2)
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+
+                VStack(spacing: 8) {
+                    Text("Scanne den Party Player QR‑Code des Hosts")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 20)
+                .frame(maxWidth: .infinity)
+                .position(x: size.width / 2, y: labelY)
+            }
+            .ignoresSafeArea()
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct ScannerBannerView: View {
+    let message: String?
+
+    var body: some View {
+        VStack {
+            if let message {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.red.opacity(0.9))
+                    .clipShape(Capsule())
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.top, 12)
+            }
+            Spacer()
+        }
+        .animation(.easeInOut(duration: 0.2), value: message)
+        .allowsHitTesting(false)
     }
 }
 

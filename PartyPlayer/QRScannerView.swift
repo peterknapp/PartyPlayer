@@ -2,7 +2,7 @@ import SwiftUI
 import AVFoundation
 
 struct QRScannerView: UIViewControllerRepresentable {
-    var onCode: (String) -> Void
+    var onCode: (String) -> Bool
     var onCancel: (() -> Void)? = nil
 
     func makeUIViewController(context: Context) -> ScannerVC {
@@ -15,12 +15,14 @@ struct QRScannerView: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: ScannerVC, context: Context) {}
 
     final class ScannerVC: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
-        var onCode: ((String) -> Void)?
+        var onCode: ((String) -> Bool)?
         var onCancel: (() -> Void)?
 
         private let session = AVCaptureSession()
         private let sessionQueue = DispatchQueue(label: "qr.session.queue")
         private var previewLayer: AVCaptureVideoPreviewLayer?
+        private var metadataOutput: AVCaptureMetadataOutput?
+        private var isProcessingCode = false
         private let permissionLabel: UILabel = {
             let lbl = UILabel()
             lbl.translatesAutoresizingMaskIntoConstraints = false
@@ -91,6 +93,7 @@ struct QRScannerView: UIViewControllerRepresentable {
                 self.session.addOutput(output)
                 output.setMetadataObjectsDelegate(self, queue: .main)
                 output.metadataObjectTypes = [.qr]
+                self.metadataOutput = output
 
                 self.session.commitConfiguration()
 
@@ -101,8 +104,15 @@ struct QRScannerView: UIViewControllerRepresentable {
                     preview.videoGravity = .resizeAspectFill
                     self.view.layer.insertSublayer(preview, at: 0)
                     self.previewLayer = preview
+                    self.updateRectOfInterest()
                 }
             }
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            previewLayer?.frame = view.layer.bounds
+            updateRectOfInterest()
         }
 
         override func viewWillAppear(_ animated: Bool) {
@@ -135,8 +145,39 @@ struct QRScannerView: UIViewControllerRepresentable {
             // Hop back to the main actor explicitly to interact with UI
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.onCode?(string)
-                self.dismiss(animated: true)
+                guard !self.isProcessingCode else { return }
+                self.isProcessingCode = true
+                let shouldStop = self.onCode?(string) ?? false
+                if shouldStop {
+                    self.stopSession()
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                        self?.isProcessingCode = false
+                    }
+                }
+            }
+        }
+
+        private func updateRectOfInterest() {
+            guard let previewLayer, let metadataOutput else { return }
+            let bounds = view.bounds
+            let side = min(bounds.width, bounds.height) * 0.62
+            let rect = CGRect(
+                x: (bounds.width - side) / 2,
+                y: (bounds.height - side) / 2,
+                width: side,
+                height: side
+            )
+            let converted = previewLayer.metadataOutputRectConverted(fromLayerRect: rect)
+            metadataOutput.rectOfInterest = converted
+        }
+
+        private func stopSession() {
+            sessionQueue.async { [weak self] in
+                guard let self else { return }
+                if self.session.isRunning {
+                    self.session.stopRunning()
+                }
             }
         }
     }
