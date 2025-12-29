@@ -89,24 +89,32 @@ struct OnboardingFlowView: View {
     }
 
     private var welcomeStep: some View {
-        OnboardingStepView(
-            title: "Willkommen bei Party Player",
-            message: "Um gemeinsam Musik zu steuern, benötigt die App einige System‑Berechtigungen. Wir erklären dir kurz warum.",
-            primaryTitle: "Weiter",
-            primaryAction: {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Willkommen bei Party Player")
+                    .font(.title2.bold())
+                Text(InfoContent.text)
+                    .font(.body)
+            }
+            .padding()
+        }
+        .safeAreaInset(edge: .bottom) {
+            Button("Weiter") {
                 didShowWelcome = true
                 advanceIfNeeded()
-            },
-            secondaryTitle: nil,
-            secondaryAction: nil
-        )
+            }
+            .buttonStyle(.borderedProminent)
+            .padding()
+        }
     }
 
     private var locationStep: some View {
         let denied = (locationService.authorizationStatus == .denied || locationService.authorizationStatus == .restricted)
-        return OnboardingStepView(
-            title: "Standort",
-            message: "Wir prüfen die Entfernung zwischen Host und Gästen, damit nur Personen in der Nähe beitreten können.",
+        return PermissionExplainView(
+            title: "Berechtigungen",
+            message: "Als Nächstes fragen wir die System‑Berechtigungen ab, damit Host und Gäste zuverlässig verbunden werden können.",
+            detailTitle: "Standort",
+            detailMessage: "Wir prüfen die Entfernung zwischen Host und Gästen, damit nur Personen in der Nähe beitreten können.",
             primaryTitle: denied ? "Einstellungen öffnen" : "Berechtigung erlauben",
             primaryAction: {
                 if denied {
@@ -187,6 +195,43 @@ private struct OnboardingStepView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            HStack(spacing: 16) {
+                if let secondaryTitle, let secondaryAction {
+                    Button(secondaryTitle, action: secondaryAction)
+                }
+                Button(primaryTitle, action: primaryAction)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding()
+    }
+}
+
+private struct PermissionExplainView: View {
+    let title: String
+    let message: String
+    let detailTitle: String
+    let detailMessage: String
+    let primaryTitle: String
+    let primaryAction: () -> Void
+    let secondaryTitle: String?
+    let secondaryAction: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Text(title)
+                .font(.title2.bold())
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(detailTitle)
+                    .font(.headline)
+                Text(detailMessage)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
             HStack(spacing: 16) {
                 if let secondaryTitle, let secondaryAction {
                     Button(secondaryTitle, action: secondaryAction)

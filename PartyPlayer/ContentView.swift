@@ -37,6 +37,7 @@ struct ContentView: View {
     @State private var adminPromptInput: String = ""
     @State private var adminPromptDismissWorkItem: DispatchWorkItem? = nil
     @State private var adminPromptShake: CGFloat = 0
+    @State private var showInfoSheet: Bool = false
     @State private var showHostRestorePrompt: Bool = false
     @State private var hostRestoreInput: String = ""
     @State private var hostRestoreShake: CGFloat = 0
@@ -100,11 +101,12 @@ struct ContentView: View {
                             adminUnlocked: $adminUnlocked,
                             showAdminPrompt: $showAdminPrompt,
                             adminCodeHash: $adminCodeHash,
+                            showInfoSheet: $showInfoSheet,
                             onDissolve: { dissolveParty() }
                         )
                     }
                     if let guest = guestHolder.guest, !isRunningOnMac {
-                        GuestView(guest: guest, showScanner: $showScanner)
+                        GuestView(guest: guest, showScanner: $showScanner, showInfoSheet: $showInfoSheet)
                     }
                 }
             }
@@ -205,6 +207,9 @@ struct ContentView: View {
                     }
                 )
             }
+            .sheet(isPresented: $showInfoSheet) {
+                InfoView()
+            }
             .fullScreenCover(isPresented: $showAppleMusicGate) {
                 AppleMusicGateView(
                     onAuthorized: {
@@ -282,6 +287,17 @@ struct ContentView: View {
             #else
             EmptyView()
             #endif
+        }
+        .toolbar {
+            if hostTab != .admin {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showInfoSheet = true
+                    } label: {
+                        Label("Info", systemImage: "info.circle")
+                    }
+                }
+            }
         }
     }
 
@@ -400,6 +416,7 @@ private struct HostTabsView: View {
     @Binding var adminUnlocked: Bool
     @Binding var showAdminPrompt: Bool
     @Binding var adminCodeHash: String?
+    @Binding var showInfoSheet: Bool
     var onDissolve: () -> Void
 
     @State private var adminLockTimer: Timer? = nil
@@ -473,6 +490,13 @@ private struct HostTabsView: View {
                         showSettings = true
                     } label: {
                         Label("Einstellungen", systemImage: "gearshape")
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        showInfoSheet = true
+                    } label: {
+                        Label("Info", systemImage: "info.circle")
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -1913,6 +1937,23 @@ private struct GuestRestorePromptView: View {
     }
 }
 
+// MARK: - InfoView
+
+private struct InfoView: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Info")
+                    .font(.title2.bold())
+                Text(InfoContent.text)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+            }
+            .padding()
+        }
+    }
+}
+
 // MARK: - AppleMusicGateView
 
 private struct AppleMusicGateView: View {
@@ -1983,6 +2024,7 @@ private struct AppleMusicGateView: View {
 struct GuestView: View {
     @ObservedObject var guest: PartyGuestController
     @Binding var showScanner: Bool
+    @Binding var showInfoSheet: Bool
 
     @State private var tick: Int = 0
     @State private var showSuggestSongs: Bool = false
@@ -2002,8 +2044,31 @@ struct GuestView: View {
             if guest.status == .admitted {
                 let remaining = max(0, (suggestionCooldownUntil?.timeIntervalSinceNow ?? 0))
                 let isCoolingDown = remaining > 0.5
-                Button("Song vorschlagen") { showSuggestSongs = true }
+                HStack(spacing: 16) {
+                    Button {
+                        showSuggestSongs = true
+                    } label: {
+                        Image(systemName: "plus.circle")
+                    }
                     .disabled(isCoolingDown)
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        showInfoSheet = true
+                    } label: {
+                        Image(systemName: "info.circle")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        showLeaveConfirm = true
+                    } label: {
+                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                }
+                .font(.title3)
                 if isCoolingDown {
                     Text("Cooldown: \(shortCooldownString(remaining))")
                         .font(.caption2)
@@ -2012,14 +2077,6 @@ struct GuestView: View {
                 Text("Aktionen verfügbar: \(guest.remainingActionSlots)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            if guest.status == .admitted {
-                Button("Verlassen") {
-                    showLeaveConfirm = true
-                }
-                .buttonStyle(.bordered)
-                .tint(.red)
             }
 
             if let state = guest.state {
