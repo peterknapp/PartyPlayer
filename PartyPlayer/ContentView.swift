@@ -67,7 +67,7 @@ struct ContentView: View {
                     VStack(spacing: 16) {
                         Text("Party Player").font(.largeTitle.bold())
                         HStack {
-                            Button("Party anlegen") {
+                            Button("Party neu anlegen") {
                                 pendingAdminCodeSetup = true
                             }
                             Button("Party beitreten") {
