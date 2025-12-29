@@ -58,4 +58,8 @@ final class GuestLocalStateStore: ObservableObject {
         guard let data = try? JSONEncoder().encode(state) else { return }
         defaults.set(data, forKey: key)
     }
+
+    func clear() {
+        state = .empty
+    }
 }

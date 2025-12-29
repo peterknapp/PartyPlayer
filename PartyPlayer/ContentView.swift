@@ -21,6 +21,7 @@ struct ContentView: View {
     @StateObject private var hostHolder = HostHolder()
     @StateObject private var guestHolder = GuestHolder()
     @StateObject private var hostStore = HostLocalStateStore()
+    @StateObject private var guestStore = GuestLocalStateStore()
 
     @State private var showScanner = false
     @State private var didScanSuccessfully: Bool = false
@@ -38,6 +39,7 @@ struct ContentView: View {
     @State private var showHostRestorePrompt: Bool = false
     @State private var hostRestoreInput: String = ""
     @State private var hostRestoreShake: CGFloat = 0
+    @State private var showGuestRestorePrompt: Bool = false
 
     #if DEBUG
     @State private var showDebugOverlay = false
@@ -185,6 +187,18 @@ struct ContentView: View {
                     }
                 )
             }
+            .sheet(isPresented: $showGuestRestorePrompt) {
+                GuestRestorePromptView(
+                    onJoin: {
+                        showGuestRestorePrompt = false
+                        restoreGuest()
+                    },
+                    onReset: {
+                        guestStore.clear()
+                        showGuestRestorePrompt = false
+                    }
+                )
+            }
             .sheet(isPresented: $showHostRestorePrompt, onDismiss: {
                 hostRestoreInput = ""
                 hostRestoreShake = 0
@@ -223,6 +237,12 @@ struct ContentView: View {
                         restoreHost(from: saved)
                     } else {
                         showHostRestorePrompt = true
+                    }
+                }
+                if hostHolder.host == nil && guestHolder.guest == nil {
+                    let hasGuestData = (guestStore.state.lastSessionID != nil && guestStore.state.lastJoinCode != nil)
+                    if hasGuestData && !showHostRestorePrompt {
+                        showGuestRestorePrompt = true
                     }
                 }
             }
@@ -266,7 +286,8 @@ struct ContentView: View {
         let guest = PartyGuestController(
             displayName: (isRunningOnMac ? "Gast" : UIDevice.current.name),
             hasAppleMusic: false,
-            locationService: locationService
+            locationService: locationService,
+            localStore: guestStore
         )
         guestHolder.guest = guest
     }
@@ -319,6 +340,13 @@ struct ContentView: View {
         hostHolder.host = host
         adminUnlocked = true
         hostTab = .admin
+    }
+
+    private func restoreGuest() {
+        guard let sessionID = guestStore.state.lastSessionID,
+              let joinCode = guestStore.state.lastJoinCode else { return }
+        startGuest()
+        guestHolder.guest?.startJoin(sessionID: sessionID, joinCode: joinCode)
     }
 }
 
@@ -1841,6 +1869,31 @@ private struct HostRestorePromptView: View {
     }
 }
 
+// MARK: - GuestRestorePromptView
+
+private struct GuestRestorePromptView: View {
+    var onJoin: () -> Void
+    var onReset: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Erneut beitreten?")
+                .font(.title3.bold())
+            Text("Es liegen gespeicherte Party-Daten vor.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            HStack(spacing: 16) {
+                Button("Verwerfen", role: .destructive) { onReset() }
+                Button("Erneut beitreten") { onJoin() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding()
+        .presentationDetents([.fraction(0.28)])
+    }
+}
+
 // MARK: - GuestView
 
 struct GuestView: View {
@@ -1854,6 +1907,14 @@ struct GuestView: View {
 
     var body: some View {
         VStack(spacing: 12) {
+            if guest.status == .connecting || guest.status == .reconnecting || guest.status == .scanning {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text(statusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             if guest.status == .admitted {
                 let remaining = max(0, (suggestionCooldownUntil?.timeIntervalSinceNow ?? 0))
                 let isCoolingDown = remaining > 0.5

@@ -137,7 +137,14 @@ final class PartyHostController: ObservableObject {
         self.localStore = localStore
         self.locationService = locationService
         if let restoredState {
-            self.state = restoredState.partyState
+            var partyState = restoredState.partyState
+            partyState.members = partyState.members.map { member in
+                var m = member
+                m.isAdmitted = false
+                m.lastSeen = Date()
+                return m
+            }
+            self.state = partyState
             self.joinCode = restoredState.joinCode
             self.removedItems = restoredState.removedItems
             self.pendingSuggestions = restoredState.pendingSuggestions
@@ -165,9 +172,11 @@ final class PartyHostController: ObservableObject {
             guard let self else { return }
             // If a connected peer disconnects, mark member as not admitted and broadcast
             if st == .notConnected {
-                if let member = self.peerToMember[peer], let idx = self.state.members.firstIndex(where: { $0.id == member }) {
-                    self.state.members[idx].isAdmitted = false
-                    self.state.members[idx].lastSeen = Date()
+                if let member = self.peerToMember[peer] {
+                    self.updateMember(memberID: member) { m in
+                        m.isAdmitted = false
+                        m.lastSeen = Date()
+                    }
                     self.peerToMember.removeValue(forKey: peer)
                     self.broadcastSnapshot()
                 }
@@ -567,15 +576,17 @@ final class PartyHostController: ObservableObject {
 
         peerToMember[peer] = req.memberID
 
-        if let idx = state.members.firstIndex(where: { $0.id == req.memberID }) {
+        if state.members.firstIndex(where: { $0.id == req.memberID }) != nil {
             DebugLog.shared.add("HOST", "reconnect: \(req.displayName) (no +1)")
-            state.members[idx].displayName = req.displayName
-            state.members[idx].hasAppleMusic = req.hasAppleMusic
-            state.members[idx].isAdmitted = true
-            state.members[idx].lastSeen = Date()
+            updateMember(memberID: req.memberID) { member in
+                member.displayName = req.displayName
+                member.hasAppleMusic = req.hasAppleMusic
+                member.isAdmitted = true
+                member.lastSeen = Date()
+            }
         } else {
             DebugLog.shared.add("HOST", "accept new: \(req.displayName) (+1)")
-            state.members.append(Member(
+            addMember(Member(
                 id: req.memberID,
                 displayName: req.displayName,
                 isAdmitted: true,
@@ -953,6 +964,19 @@ final class PartyHostController: ObservableObject {
         } catch {
             DebugLog.shared.add("MIRROR", "rebuild failed: \(error.localizedDescription)")
         }
+    }
+
+    private func updateMember(memberID: MemberID, update: (inout Member) -> Void) {
+        var updated = state
+        guard let idx = updated.members.firstIndex(where: { $0.id == memberID }) else { return }
+        update(&updated.members[idx])
+        state = updated
+    }
+
+    private func addMember(_ member: Member) {
+        var updated = state
+        updated.members.append(member)
+        state = updated
     }
 
     private func hydrateFromRestoredState() async {

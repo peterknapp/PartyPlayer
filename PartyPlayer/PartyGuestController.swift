@@ -29,7 +29,7 @@ final class PartyGuestController: ObservableObject {
 
     private let mpc: MPCService
     private let locationService: LocationService
-    private let localStore = GuestLocalStateStore()
+    private let localStore: GuestLocalStateStore
     
     private let defaults = UserDefaults.standard
     private let lastSessionKey = "pp_lastSessionID" // migration only
@@ -53,7 +53,13 @@ final class PartyGuestController: ObservableObject {
     private var pendingVoteTasks: [UUID: Task<Void, Never>] = [:]
     private var lastVoteTapAt: [UUID: Date] = [:]
 
-    init(displayName: String, hasAppleMusic: Bool, locationService: LocationService) {
+    init(
+        displayName: String,
+        hasAppleMusic: Bool,
+        locationService: LocationService,
+        localStore: GuestLocalStateStore
+    ) {
+        self.localStore = localStore
         self.displayName = displayName
         self.hasAppleMusic = hasAppleMusic
         self.locationService = locationService
@@ -447,4 +453,3 @@ final class PartyGuestController: ObservableObject {
         }
     }
 }
-
